@@ -168,11 +168,13 @@
     (function() {
         const origAjax = $.ajax;
         $.ajax = function(opt) {
-            if (opt && opt.url && (opt.url.includes("/client/pre-bids/add") || opt.url.includes("/client/pre-bids/remove"))) {
+            if (opt 
+                && opt.url 
+                && (opt.url.includes("/client/pre-bids/add") || opt.url.includes("/client/pre-bids/remove") || opt.url.includes("/client/timelimit-auctions/bid"))) {
                 const origSuccess = opt.success;
                 opt.success = function(res) {
                     if (res && res.success) {
-                        alert("事前入札を登録しました。（リロード無効化済み）");
+                        console.log("事前入札を保存しました");
                         return;
                     }
                     if (origSuccess) origSuccess.apply(this, arguments);
