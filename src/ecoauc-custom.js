@@ -79,8 +79,17 @@
                 const m = el.style.backgroundImage.match(/url\("(.*?)"\)/);
                 return m ? m[1].replace(/(_s|_m)\./, "_o.").split("?")[0] : null;
             }).filter(Boolean);
+            // 商品名抽出
+            const h2Elem = doc.querySelector(".section-heading h2");
+            let name = "";
+            if (h2Elem) {
+                // 最初の非空テキストノードのみ取得
+                const firstText = Array.from(h2Elem.childNodes)
+                    .filter(n => n.nodeType === 3 && n.textContent.trim())[0];
+                name = firstText ? firstText.textContent.trim() : "";
+            }
             const description = doc.querySelector(".item-info.view-form")?.innerText.trim().replace(/\s+/g, " ") || "";
-            return { thumbnails, description };
+            return { thumbnails, description, name };
         }
 
         // スタイル付き要素生成
@@ -143,10 +152,8 @@
             img.onerror = function() {
                 if (retry < 3) {
                     retry++;
-                    console.log("🔄 画像再取得:", retry, src);
                     setTimeout(() => reloadImage(src), 800 * retry);
                 } else {
-                    console.log("❌ 画像取得失敗:", src);
                     img.style.opacity = "0.3";
                 }
             };
@@ -174,8 +181,6 @@
             return origAjax.apply(this, arguments);
         };
     })();
-
-    console.log("📦 EcoAuc QuickView Inline 起動");
 
     // シングルカラムスタイル適用
     (function() {
@@ -228,7 +233,7 @@
             if (!linkEl) return;
             const card = linkEl.closest(".mb-grid-card");
             if (!card || card.querySelector(".ecoauc-inline")) return;
-            const { thumbnails, description } = parseItemHtml(html);
+            const { thumbnails, description, name } = parseItemHtml(html);
             const infoDiv = createStyledElement("div", {
                 borderTop: "1px solid #ddd",
                 padding: "12px 8px",
@@ -239,11 +244,7 @@
             });
             infoDiv.className = "ecoauc-inline";
             infoDiv.appendChild(createThumbnails(thumbnails));
-            const descPre = createStyledElement("pre", {
-                whiteSpace: "pre-wrap",
-                margin: "0",
-                fontFamily: "inherit"
-            });
+            // 商品名は説明ブロックの先頭だけに表示
             let descHtml = description;
             let warn = false;
             CONFIG.WARN_WORDS.forEach(word => {
@@ -251,12 +252,18 @@
                 if (reg.test(description)) warn = true;
                 descHtml = descHtml.replace(reg, `<span style="background:linear-gradient(transparent 60%,#ffeb3b 60%);color:#c62828;font-weight:700;">${word}</span>`);
             });
-            descPre.innerHTML = descHtml;
+            // 商品名と説明を1つのdivで横並び表示
+            const descDiv = createStyledElement("div", {
+                whiteSpace: "pre-wrap",
+                margin: "0",
+                fontFamily: "inherit"
+            });
+            descDiv.innerHTML = name ? `<b style='font-size:15px;'>${name}</b> ${descHtml}` : descHtml;
             if (warn) {
                 infoDiv.style.background = "#fff3e0";
                 infoDiv.style.border = "2px solid #ff9800";
             }
-            infoDiv.appendChild(descPre);
+            infoDiv.appendChild(descDiv);
             card.appendChild(infoDiv);
         });
     } else {
