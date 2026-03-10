@@ -144,7 +144,11 @@
         }
         // ...existing code...
     // 画像拡大ビュー生成
-    function createImageViewer(src) {
+    function createImageViewer(sources, startIndex = 0) {
+        const imgs = Array.isArray(sources) ? sources.slice() : [sources];
+        let idx = startIndex;
+        // preload all
+        imgs.forEach(s => { const i=new Image(); i.src=s; });
         const overlay = createStyledElement("div", {
             position: "fixed",
             inset: 0,
@@ -152,18 +156,38 @@
             display: "flex",
             justifyContent: "center",
             alignItems: "center",
-            zIndex: 9999,
-            cursor: "zoom-out"
+            zIndex: 9999
         });
         const img = createStyledElement("img", {
             maxWidth: "95%",
             maxHeight: "95%",
             borderRadius: "6px",
-            boxShadow: "0 0 20px #000"
+            boxShadow: "0 0 20px #000",
+            cursor: "zoom-out"
         });
-        img.src = src;
-        overlay.appendChild(img);
-        overlay.onclick = () => overlay.remove();
+        function update() {
+            img.src = imgs[idx];
+        }
+        update();
+        const btnStyle = {position: "absolute", top: "50%", transform: "translateY(-50%)", color: "#fff", background: "rgba(0,0,0,0.3)", border: "none", padding: "8px", cursor: "pointer", fontSize: "24px"};
+        const prev = createStyledElement("button", btnStyle);
+        prev.textContent = "‹";
+        prev.style.left = "20px";
+        prev.addEventListener("click", e => { e.stopPropagation(); idx = (idx - 1 + imgs.length) % imgs.length; update(); });
+        const next = createStyledElement("button", btnStyle);
+        next.textContent = "›";
+        next.style.right = "20px";
+        next.addEventListener("click", e => { e.stopPropagation(); idx = (idx + 1) % imgs.length; update(); });
+        overlay.append(prev, img, next);
+        // wheel to navigate
+        overlay.addEventListener("wheel", e => {
+            e.preventDefault();
+            idx = (idx + (e.deltaY > 0 ? 1 : -1) + imgs.length) % imgs.length;
+            update();
+        }, {passive:false});
+        overlay.addEventListener("click", e => {
+            if (e.target === overlay || e.target === img) overlay.remove();
+        });
         return overlay;
     }
 
@@ -181,7 +205,7 @@
             e.preventDefault();
             container.scrollLeft += e.deltaY;
         }, { passive: false });
-        thumbnails.forEach(src => {
+        thumbnails.forEach((src, i) => {
             const img = createStyledElement("img", {
                 height: CONFIG.IMAGE_HEIGHT + "px",
                 flexShrink: 0,
@@ -202,7 +226,7 @@
                 }
             };
             reloadImage(src);
-            img.onclick = () => document.body.appendChild(createImageViewer(img.src));
+            img.onclick = () => document.body.appendChild(createImageViewer(thumbnails, i));
             container.appendChild(img);
         });
         return container;
