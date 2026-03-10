@@ -142,7 +142,6 @@
 
             return { input, button };
         }
-        // ...existing code...
     // 画像拡大ビュー生成
     function createImageViewer(sources, startIndex = 0) {
         const imgs = Array.isArray(sources) ? sources.slice() : [sources];
@@ -215,7 +214,7 @@
             });
             let retry = 0;
             function reloadImage(url) {
-                img.src = url + (url.includes("?") ? "&" : "?") + "t=" + Date.now();
+                img.src = url;
             }
             img.onerror = function() {
                 if (retry < 3) {
