@@ -26,49 +26,29 @@
             }
         }
 
-        // プログレスバー生成
+        // シンプルな進捗表示
         function createProgressBar(total) {
             let current = 0;
-            const wrapper = document.createElement("div");
-            wrapper.style.position = "fixed";
-            wrapper.style.bottom = "30px";
-            wrapper.style.left = "30px";
-            wrapper.style.width = "380px";
-            wrapper.style.background = "#111";
-            wrapper.style.color = "#fff";
-            wrapper.style.padding = "16px";
-            wrapper.style.borderRadius = "10px";
-            wrapper.style.fontSize = "16px";
-            wrapper.style.zIndex = "99999";
-            wrapper.style.boxShadow = "0 0 20px rgba(0,0,0,0.6)";
-            const title = document.createElement("div");
-            title.textContent = "📦 EcoAuc Cache Progress";
-            title.style.fontWeight = "bold";
-            title.style.marginBottom = "10px";
-            const barBg = document.createElement("div");
-            barBg.style.height = "18px";
-            barBg.style.background = "#333";
-            barBg.style.borderRadius = "6px";
-            barBg.style.overflow = "hidden";
-            const bar = document.createElement("div");
-            bar.style.height = "100%";
-            bar.style.width = "0%";
-            bar.style.background = "#00c853";
-            bar.style.transition = "width 0.3s";
-            barBg.appendChild(bar);
-            const status = document.createElement("div");
-            status.style.marginTop = "8px";
-            wrapper.append(title, barBg, status);
-            document.body.appendChild(wrapper);
-            function update(waitSec = null) {
-                const percent = Math.floor(100 * (current / total));
-                bar.style.width = percent + "%";
-                status.textContent = `${current}/${total} (${percent}%)` + (waitSec ? ` ⏳待機:${waitSec.toFixed(1)}s` : "");
+            const el = document.createElement("div");
+            Object.assign(el.style, {
+                position: "fixed",
+                bottom: "10px",
+                left: "10px",
+                background: "#000",
+                color: "#fff",
+                padding: "12px 24px",
+                fontSize: "20px",
+                zIndex: 99999
+            });
+            document.body.appendChild(el);
+            function update(waitSec) {
+                el.textContent = `${current}/${total}` + (waitSec ? ` ⏳${waitSec.toFixed(1)}s` : "");
             }
+            update();
             return {
                 tick() { current++; update(); },
                 wait(sec) { update(sec); },
-                done() { status.textContent = "🎉 Complete"; setTimeout(() => wrapper.remove(), 3000); }
+                done() { el.textContent = "完了"; setTimeout(() => el.remove(), 1000); }
             };
         }
 
@@ -97,6 +77,70 @@
             const el = document.createElement(tag);
             Object.assign(el.style, styleObj);
             return el;
+        }
+
+        // ユーザーID取得（dataLayer優先、続いてwindow.USER_ID）
+        function getUserId() {
+            let id = null;
+            if (window.dataLayer && Array.isArray(window.dataLayer)) {
+                for (const entry of window.dataLayer) {
+                    if (entry && typeof entry === "object" && "userId" in entry) {
+                        id = entry.userId;
+                        break;
+                    }
+                }
+            }
+            if (!id && window.USER_ID) {
+                id = window.USER_ID;
+            }
+            if (!id) console.warn("userIdが取得できませんでした。メモ保存は失敗する可能性があります。");
+            return id;
+        }
+
+        // メモ入力欄と保存ボタンを作成し、イベントをバインド
+        function createMemoControls(itemId) {
+            const input = document.createElement("input");
+            input.type = "text";
+            input.placeholder = "メモを設定";
+            input.style.margin = "8px 8px 0 0";
+
+            const button = document.createElement("button");
+            button.textContent = "保存";
+            button.style.marginTop = "8px";
+
+            button.addEventListener("click", async () => {
+                button.disabled = true;
+                const userId = getUserId();
+                const csrfToken = document.querySelector('input[name="_csrfToken"]')?.value || "";
+                const body = `user_id=${encodeURIComponent(userId)}&auction_item_id=${encodeURIComponent(itemId)}&memo=${encodeURIComponent(input.value)}&_csrfToken=${encodeURIComponent(csrfToken)}`;
+                try {
+                    const res = await fetch("https://www.ecoauc.com/client/item-memos/add", {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/x-www-form-urlencoded",
+                            "X-Requested-With": "XMLHttpRequest"
+                        },
+                        credentials: "include",
+                        body
+                    });
+                    if (res.ok) {
+                        const data = await res.json();
+                        if (data.success && typeof data.memo === "string") {
+                            input.value = data.memo;
+                            console.log("メモ保存完了: " + data.memo);
+                        } else {
+                            console.log("メモ保存失敗: " + (data.message || ""));
+                        }
+                    } else {
+                        console.log("メモ保存失敗");
+                    }
+                } catch {
+                    console.log("メモ保存エラー");
+                }
+                button.disabled = false;
+            });
+
+            return { input, button };
         }
         // ...existing code...
     // 画像拡大ビュー生成
@@ -266,57 +310,8 @@
             }
             infoDiv.appendChild(descDiv);
 
-            // メモ入力欄と保存ボタンだけ追加
-            const memoInput = document.createElement("input");
-            memoInput.type = "text";
-            memoInput.placeholder = "メモを設定";
-            memoInput.style.margin = "8px 8px 0 0";
-            const memoBtn = document.createElement("button");
-            memoBtn.textContent = "保存";
-            memoBtn.style.marginTop = "8px";
-            memoBtn.onclick = async () => {
-                memoBtn.disabled = true;
-                let userId = null;
-                // dataLayerからuserId取得
-                if (window.dataLayer && Array.isArray(window.dataLayer)) {
-                    for (const entry of window.dataLayer) {
-                        if (entry && typeof entry === "object" && "userId" in entry) {
-                            userId = entry.userId;
-                            break;
-                        }
-                    }
-                }
-                if (!userId) {
-                    console.warn("userIdが取得できませんでした。メモ保存は失敗する可能性があります。");
-                }
-                const csrfToken = document.querySelector('input[name="_csrfToken"]')?.value || "";
-                const body = `user_id=${encodeURIComponent(userId)}&auction_item_id=${encodeURIComponent(id)}&memo=${encodeURIComponent(memoInput.value)}&_csrfToken=${encodeURIComponent(csrfToken)}`;
-                try {
-                    const res = await fetch("https://www.ecoauc.com/client/item-memos/add", {
-                        method: "POST",
-                        headers: {
-                            "Content-Type": "application/x-www-form-urlencoded",
-                            "X-Requested-With": "XMLHttpRequest"
-                        },
-                        credentials: "include",
-                        body
-                    });
-                    if (res.ok) {
-                        const data = await res.json();
-                        if (data.success && typeof data.memo === "string") {
-                            memoInput.value = data.memo;
-                            console.log("メモ保存完了: " + data.memo);
-                        } else {
-                            console.log("メモ保存失敗: " + (data.message || ""));
-                        }
-                    } else {
-                        console.log("メモ保存失敗");
-                    }
-                } catch {
-                    console.log("メモ保存エラー");
-                }
-                memoBtn.disabled = false;
-            };
+            // メモ入力欄と保存ボタンをヘルパーで作成
+            const { input: memoInput, button: memoBtn } = createMemoControls(id);
             infoDiv.appendChild(memoInput);
             infoDiv.appendChild(memoBtn);
             card.appendChild(infoDiv);
