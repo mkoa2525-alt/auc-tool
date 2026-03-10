@@ -246,7 +246,7 @@
             });
             infoDiv.className = "ecoauc-inline";
             infoDiv.appendChild(createThumbnails(thumbnails));
-            // 商品名は説明ブロックの先頭だけに表示
+            // 商品名と説明はそのまま
             let descHtml = description;
             let warn = false;
             CONFIG.WARN_WORDS.forEach(word => {
@@ -254,7 +254,6 @@
                 if (reg.test(description)) warn = true;
                 descHtml = descHtml.replace(reg, `<span style="background:linear-gradient(transparent 60%,#ffeb3b 60%);color:#c62828;font-weight:700;">${word}</span>`);
             });
-            // 商品名と説明を1つのdivで横並び表示
             const descDiv = createStyledElement("div", {
                 whiteSpace: "pre-wrap",
                 margin: "0",
@@ -266,6 +265,60 @@
                 infoDiv.style.border = "2px solid #ff9800";
             }
             infoDiv.appendChild(descDiv);
+
+            // メモ入力欄と保存ボタンだけ追加
+            const memoInput = document.createElement("input");
+            memoInput.type = "text";
+            memoInput.placeholder = "メモを設定";
+            memoInput.style.margin = "8px 8px 0 0";
+            const memoBtn = document.createElement("button");
+            memoBtn.textContent = "保存";
+            memoBtn.style.marginTop = "8px";
+            memoBtn.onclick = async () => {
+                memoBtn.disabled = true;
+                let userId = null;
+                // dataLayerからuserId取得
+                if (window.dataLayer && Array.isArray(window.dataLayer)) {
+                    for (const entry of window.dataLayer) {
+                        if (entry && typeof entry === "object" && "userId" in entry) {
+                            userId = entry.userId;
+                            break;
+                        }
+                    }
+                }
+                if (!userId) {
+                    console.warn("userIdが取得できませんでした。メモ保存は失敗する可能性があります。");
+                }
+                const csrfToken = document.querySelector('input[name="_csrfToken"]')?.value || "";
+                const body = `user_id=${encodeURIComponent(userId)}&auction_item_id=${encodeURIComponent(id)}&memo=${encodeURIComponent(memoInput.value)}&_csrfToken=${encodeURIComponent(csrfToken)}`;
+                try {
+                    const res = await fetch("https://www.ecoauc.com/client/item-memos/add", {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/x-www-form-urlencoded",
+                            "X-Requested-With": "XMLHttpRequest"
+                        },
+                        credentials: "include",
+                        body
+                    });
+                    if (res.ok) {
+                        const data = await res.json();
+                        if (data.success && typeof data.memo === "string") {
+                            memoInput.value = data.memo;
+                            console.log("メモ保存完了: " + data.memo);
+                        } else {
+                            console.log("メモ保存失敗: " + (data.message || ""));
+                        }
+                    } else {
+                        console.log("メモ保存失敗");
+                    }
+                } catch {
+                    console.log("メモ保存エラー");
+                }
+                memoBtn.disabled = false;
+            };
+            infoDiv.appendChild(memoInput);
+            infoDiv.appendChild(memoBtn);
             card.appendChild(infoDiv);
         });
     } else {
