@@ -79,7 +79,7 @@
             return el;
         }
 
-        // ユーザーID取得（dataLayer優先、続いてwindow.USER_ID）
+        // ユーザーID取得（dataLayer優先）
         function getUserId() {
             let id = null;
             if (window.dataLayer && Array.isArray(window.dataLayer)) {
@@ -89,9 +89,6 @@
                         break;
                     }
                 }
-            }
-            if (!id && window.USER_ID) {
-                id = window.USER_ID;
             }
             if (!id) console.warn("userIdが取得できませんでした。メモ保存は失敗する可能性があります。");
             return id;
@@ -168,25 +165,28 @@
             img.src = imgs[idx];
         }
         update();
-        const btnStyle = {position: "absolute", top: "50%", transform: "translateY(-50%)", color: "#fff", background: "rgba(0,0,0,0.3)", border: "none", padding: "8px", cursor: "pointer", fontSize: "24px"};
-        const prev = createStyledElement("button", btnStyle);
-        prev.textContent = "‹";
-        prev.style.left = "20px";
-        prev.addEventListener("click", e => { e.stopPropagation(); idx = (idx - 1 + imgs.length) % imgs.length; update(); });
-        const next = createStyledElement("button", btnStyle);
-        next.textContent = "›";
-        next.style.right = "20px";
-        next.addEventListener("click", e => { e.stopPropagation(); idx = (idx + 1) % imgs.length; update(); });
-        overlay.append(prev, img, next);
-        // wheel to navigate
-        overlay.addEventListener("wheel", e => {
-            e.preventDefault();
-            idx = (idx + (e.deltaY > 0 ? 1 : -1) + imgs.length) % imgs.length;
-            update();
-        }, {passive:false});
+        overlay.append(img);
         overlay.addEventListener("click", e => {
-            if (e.target === overlay || e.target === img) overlay.remove();
+            if (e.target === overlay || e.target === img) cleanup();
         });
+        function onKey(e) {
+            if (e.key === "ArrowRight") {
+                idx = (idx + 1) % imgs.length;
+                update();
+            } else if (e.key === "ArrowLeft") {
+                idx = (idx - 1 + imgs.length) % imgs.length;
+                update();
+            } else if (e.key === "Escape" || e.key === "Enter") {
+                cleanup();
+            }
+        }
+
+        function cleanup() {
+            document.removeEventListener("keydown", onKey);
+            overlay.remove();
+        }
+
+        document.addEventListener("keydown", onKey);
         return overlay;
     }
 
