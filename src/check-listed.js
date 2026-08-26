@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         商品管理表 ⇔ メルカリShops ⇔ メルカリ ⇔ ラクマ ⇔ ヤフーフリマ 出品チェック
+// @name         商品管理表 ⇔ メルカリShops ⇔ メルカリ ⇔ ラクマ ⇔ ヤフーフリマ ⇔ ヤフオク 出品チェック
 // @namespace    https://sustre-product-sales.vercel.app/products
-// @version      15.0.0
-// @description  商品管理表・メルカリShops・メルカリ・ラクマ・ヤフーフリマの出品状況をチェックしてCSV出力
+// @version      16.0.0
+// @description  商品管理表・メルカリShops・メルカリ・ラクマ・ヤフーフリマ・ヤフオクの出品状況をチェックしてCSV出力
 // @match        https://sustre-product-sales.vercel.app/*
 // @match        https://mercari-shops.com/seller/shops/*/products*
 // @match        https://jp.mercari.com/mypage/listings*
@@ -21,7 +21,20 @@
     // =========================================================
 
     const CONFIG = {
-        keys: {
+        hosts: {
+            management: 'sustre-product-sales.vercel.app',
+            shops: 'mercari-shops.com',
+            mercari: 'jp.mercari.com',
+            rakuma: 'fril.jp',
+            yahoo: 'paypayfleamarket.yahoo.co.jp',
+            auctions: 'auctions.yahoo.co.jp'
+        },
+
+        session: {
+            queryParam: 'check_session'
+        },
+
+        storage: {
             management: 'product_management_ids',
             shops: 'product_mercari_shops',
             mercari: 'product_mercari',
@@ -59,19 +72,26 @@
             },
 
             shops: {
+                stockFilter:
+                    'input[name="productStockCondition"][value="IN_STOCK"]',
                 product: '[data-testid="product"]',
                 name: '[data-testid="product-name"]'
             },
 
             mercari: {
                 product: '[data-testid="listed-item"]',
-                name: '[data-testid="item-label"]'
+                name: '[data-testid="item-label"]',
+                loadMore: 'button'
             },
 
             rakuma: {
                 product: '[data-test="item-row"]',
                 name: '.deal-item__heading',
                 pagination: 'nav.pagination'
+            },
+
+            pagination: {
+                nextLabel: '次へ'
             },
 
             yahoo: {
@@ -90,6 +110,7 @@
         timeout: {
             normal: 15000,
             mercariLoadMore: 60000,
+            mercariPageChange: 10000,
             pageChange: 15000
         }
     };
@@ -116,15 +137,6 @@
 
     const removeElement = selector =>
         $(selector)?.remove();
-
-    const escapeHtml = value =>
-        String(value ?? '')
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;');
-
 
     async function waitFor(
         condition,
@@ -164,7 +176,7 @@
         fromUrl() {
             return new URLSearchParams(
                 location.search
-            ).get('check_session');
+            ).get(CONFIG.session.queryParam);
         },
 
         async isValid() {
@@ -175,7 +187,7 @@
             }
 
             const savedSession = await getData(
-                CONFIG.keys.session,
+                CONFIG.storage.session,
                 ''
             );
 
@@ -189,7 +201,7 @@
             const target = new URL(url);
 
             target.searchParams.set(
-                'check_session',
+                CONFIG.session.queryParam,
                 session
             );
 
@@ -198,7 +210,7 @@
 
         async clear() {
             await setData(
-                CONFIG.keys.session,
+                CONFIG.storage.session,
                 ''
             );
         }
@@ -295,6 +307,47 @@
         }
     };
 
+    async function clearPaginationState() {
+        await Promise.all([
+            setData(CONFIG.storage.yahooPages, []),
+            setData(CONFIG.storage.auctionsPages, [])
+        ]);
+    }
+
+    async function clearCheckState() {
+        await Promise.all([
+            Session.clear(),
+            clearPaginationState()
+        ]);
+        Progress.remove();
+    }
+
+    async function abortCheck(message) {
+        await clearCheckState();
+
+        if (message) {
+            alert(message);
+        }
+    }
+
+    const COLLECTED_STORAGE_KEYS = [
+        'shops',
+        'mercari',
+        'rakuma',
+        'yahoo',
+        'auctions',
+        'yahooPages',
+        'auctionsPages'
+    ];
+
+    async function resetCollectedData() {
+        await Promise.all(
+            COLLECTED_STORAGE_KEYS.map(key =>
+                setData(CONFIG.storage[key], [])
+            )
+        );
+    }
+
 
     // =========================================================
     // 管理表
@@ -390,7 +443,7 @@
         async selectInStock() {
             const radio = await waitFor(() =>
                 $(
-                    'input[name="productStockCondition"][value="IN_STOCK"]'
+                    CONFIG.selectors.shops.stockFilter
                 )
             );
 
@@ -468,14 +521,11 @@
 
             const management =
                 await getData(
-                    CONFIG.keys.management
+                    CONFIG.storage.management
                 );
 
             if (!management.length) {
-                await Session.clear();
-                Progress.remove();
-
-                alert(
+                await abortCheck(
                     '管理表の商品データがありません。\n\n' +
                     '最初から「出品チェック開始」を押してください。'
                 );
@@ -484,10 +534,7 @@
             }
 
             if (!await this.selectInStock()) {
-                await Session.clear();
-                Progress.remove();
-
-                alert(
+                await abortCheck(
                     'メルカリShopsの「販売中」フィルターを設定できませんでした。\n\n' +
                     '商品一覧が表示されているか確認してください。'
                 );
@@ -503,10 +550,7 @@
             const titles = await this.load();
 
             if (!titles.length) {
-                await Session.clear();
-                Progress.remove();
-
-                alert(
+                await abortCheck(
                     'メルカリShopsの商品を取得できませんでした。\n\n' +
                     '商品一覧が表示されているか確認してください。'
                 );
@@ -515,7 +559,7 @@
             }
 
             await setData(
-                CONFIG.keys.shops,
+                CONFIG.storage.shops,
                 titles
             );
 
@@ -579,7 +623,7 @@
         },
 
         getLoadMoreButton() {
-            return $$('button').find(button =>
+            return $$(CONFIG.selectors.mercari.loadMore).find(button =>
                 button.textContent
                     ?.trim() === 'もっと見る'
             );
@@ -589,7 +633,8 @@
             const start = Date.now();
 
             while (
-                Date.now() - start < 10000
+                Date.now() - start <
+                CONFIG.timeout.mercariPageChange
             ) {
                 await sleep(500);
 
@@ -682,18 +727,15 @@
                 management,
                 shops
             ] = await Promise.all([
-                getData(CONFIG.keys.management),
-                getData(CONFIG.keys.shops)
+                getData(CONFIG.storage.management),
+                getData(CONFIG.storage.shops)
             ]);
 
             if (
                 !management.length ||
                 !shops.length
             ) {
-                await Session.clear();
-                Progress.remove();
-
-                alert(
+                await abortCheck(
                     'チェック用データがありません。\n\n' +
                     '最初から「出品チェック開始」を押してください。'
                 );
@@ -705,10 +747,7 @@
                 await this.loadAll();
 
             if (!mercari.length) {
-                await Session.clear();
-                Progress.remove();
-
-                alert(
+                await abortCheck(
                     'メルカリの商品を取得できませんでした。\n\n' +
                     '出品中の商品一覧が表示されているか確認してください。'
                 );
@@ -717,7 +756,7 @@
             }
 
             await setData(
-                CONFIG.keys.mercari,
+                CONFIG.storage.mercari,
                 mercari
             );
 
@@ -947,9 +986,9 @@
                 shops,
                 mercari
             ] = await Promise.all([
-                getData(CONFIG.keys.management),
-                getData(CONFIG.keys.shops),
-                getData(CONFIG.keys.mercari)
+                getData(CONFIG.storage.management),
+                getData(CONFIG.storage.shops),
+                getData(CONFIG.storage.mercari)
             ]);
 
             if (
@@ -957,10 +996,7 @@
                 !shops.length ||
                 !mercari.length
             ) {
-                await Session.clear();
-                Progress.remove();
-
-                alert(
+                await abortCheck(
                     'チェック用データが不足しています。\n\n' +
                     '最初から「出品チェック開始」を押してください。'
                 );
@@ -972,7 +1008,7 @@
                 await this.loadAll();
 
             await setData(
-                CONFIG.keys.rakuma,
+                CONFIG.storage.rakuma,
                 rakuma
             );
 
@@ -992,6 +1028,198 @@
                     CONFIG.urls.yahoo,
                     Session.fromUrl()
                 );
+        }
+    };
+
+
+    // =========================================================
+    // ページング共通処理
+    // =========================================================
+
+    const Pagination = {
+
+        getCurrentPage() {
+            return Number(
+                new URLSearchParams(
+                    location.search
+                ).get('page')
+            ) || 1;
+        },
+
+        getNextUrl(paginationSelector, nextLabel) {
+            const pagination =
+                $(paginationSelector);
+
+            if (!pagination) {
+                return null;
+            }
+
+            const next =
+                $$('a', pagination).find(link =>
+                    link.textContent
+                        ?.trim()
+                        .includes(nextLabel)
+                );
+
+            const href =
+                next?.getAttribute('href');
+
+            return href
+                ? new URL(
+                    href,
+                    location.origin
+                ).toString()
+                : null;
+        },
+
+        async waitForProducts(getProducts) {
+            const start = Date.now();
+            let previous = -1;
+            let stable = 0;
+
+            while (
+                Date.now() - start <
+                CONFIG.timeout.normal
+            ) {
+                const products = getProducts();
+
+                if (products.length === previous) {
+                    stable++;
+                } else {
+                    stable = 0;
+                }
+
+                previous = products.length;
+
+                if (products.length && stable >= 2) {
+                    return products;
+                }
+
+                await sleep(500);
+            }
+
+            return getProducts();
+        },
+
+        unique(products) {
+            return [
+                ...new Map(
+                    products
+                        .filter(Boolean)
+                        .map(product => [
+                            typeof product === 'string'
+                                ? product
+                                : product?.title,
+                            product
+                        ])
+                        .filter(([title]) => title)
+                ).values()
+            ];
+        },
+
+        async loadAll({
+            storageKey,
+            platform,
+            progressText,
+            progressPercent,
+            paginationSelector,
+            nextLabel,
+            getProducts
+        }) {
+            let allProducts =
+                await getData(storageKey, []);
+            if (!Array.isArray(allProducts)) {
+                allProducts = [];
+            }
+            const visited = new Set();
+
+            while (true) {
+                const page =
+                    this.getCurrentPage();
+
+                if (visited.has(page)) {
+                    console.warn(
+                        `[${platform}] 同一ページを検出:`,
+                        page
+                    );
+                    break;
+                }
+
+                visited.add(page);
+
+                Progress.update(
+                    `${progressText} ${page}ページ目`,
+                    progressPercent
+                );
+
+                const products =
+                    await this.waitForProducts(
+                        getProducts
+                    );
+
+                console.log(
+                    `[${platform}] ${page}ページ目:`,
+                    products.length,
+                    '件'
+                );
+
+                allProducts = this.unique([
+                    ...allProducts,
+                    ...products
+                ]);
+
+                await setData(
+                    storageKey,
+                    allProducts
+                );
+
+                const nextUrl =
+                    this.getNextUrl(
+                        paginationSelector,
+                        nextLabel
+                    );
+
+                if (!nextUrl) {
+                    console.log(
+                        `[${platform}] 最終ページ到達`
+                    );
+                    break;
+                }
+
+                const nextPage =
+                    Number(
+                        new URL(nextUrl)
+                            .searchParams
+                            .get('page')
+                    );
+
+                if (
+                    !nextPage ||
+                    visited.has(nextPage)
+                ) {
+                    break;
+                }
+
+                const target =
+                    new URL(nextUrl);
+
+                target.searchParams.set(
+                    CONFIG.session.queryParam,
+                    Session.fromUrl()
+                );
+
+                Progress.update(
+                    `${progressText} ${page} → ${nextPage}ページ`,
+                    progressPercent
+                );
+
+                location.href =
+                    target.toString();
+
+                return null;
+            }
+
+            return this.unique(allProducts);
         }
     };
 
@@ -1042,230 +1270,17 @@
                 .filter(Boolean);
         },
 
-        getCurrentPage() {
-            return Number(
-                new URLSearchParams(
-                    location.search
-                ).get('page')
-            ) || 1;
-        },
-
-        getNextUrl() {
-            const pagination =
-                $(
-                    CONFIG.selectors.yahoo.pagination
-                );
-
-            if (!pagination) {
-                return null;
-            }
-
-            const next =
-                $$('a', pagination).find(link =>
-                    link.textContent
-                        ?.trim()
-                        .includes('次へ')
-                );
-
-            const href =
-                next?.getAttribute('href');
-
-            return href
-                ? new URL(
-                    href,
-                    location.origin
-                ).toString()
-                : null;
-        },
-
-        getSignature() {
-            const products =
-                this.getProducts();
-
-            return [
-                this.getCurrentPage(),
-                products.length,
-                products[0]?.title || '',
-                products[products.length - 1]?.title || ''
-            ].join('|');
-        },
-
-        async waitForProducts() {
-            const start = Date.now();
-
-            let previous = -1;
-            let stable = 0;
-
-            while (
-                Date.now() - start <
-                CONFIG.timeout.normal
-            ) {
-                const products =
-                    this.getProducts();
-
-                if (products.length === previous) {
-                    stable++;
-                } else {
-                    stable = 0;
-                }
-
-                previous = products.length;
-
-                if (
-                    products.length &&
-                    stable >= 2
-                ) {
-                    return products;
-                }
-
-                await sleep(500);
-            }
-
-            return this.getProducts();
-        },
-
-        /*
-         * =====================================================
-         * Yahooページ取得
-         *
-         * 重要：
-         * ページ遷移する前に、現在ページの商品を
-         * GM storageへ保存する。
-         *
-         * これにより
-         *
-         * 1ページ目
-         * ↓
-         * 2ページ目
-         * ↓
-         * 3ページ目
-         *
-         * と遷移しても、それまでの商品を失わない。
-         * =====================================================
-         */
-
         async loadAll() {
-            let allProducts =
-                await getData(
-                    CONFIG.keys.yahooPages,
-                    []
-                );
-
-            const visited =
-                new Set();
-
-            while (true) {
-                const page =
-                    this.getCurrentPage();
-
-                if (visited.has(page)) {
-                    console.warn(
-                        '[ヤフーフリマ] 同一ページを検出:',
-                        page
-                    );
-                    break;
-                }
-
-                visited.add(page);
-
-                Progress.update(
-                    `ヤフーフリマを確認中... ${page}ページ目`,
-                    95
-                );
-
-                const products =
-                    await this.waitForProducts();
-
-                console.log(
-                    `[ヤフーフリマ] ${page}ページ目:`,
-                    products.length,
-                    '件'
-                );
-
-                /*
-                 * 現在ページの商品を追加
-                 */
-                allProducts.push(...products);
-
-                /*
-                 * タイトル重複を除去して保存
-                 *
-                 * ここで保存するのでページ遷移しても残る
-                 */
-                allProducts = [
-                    ...new Map(
-                        allProducts.map(product => [
-                            product.title,
-                            product
-                        ])
-                    ).values()
-                ];
-
-                await setData(
-                    CONFIG.keys.yahooPages,
-                    allProducts
-                );
-
-                const nextUrl =
-                    this.getNextUrl();
-
-                if (!nextUrl) {
-                    console.log(
-                        '[ヤフーフリマ] 最終ページ到達'
-                    );
-                    break;
-                }
-
-                const nextPage =
-                    Number(
-                        new URL(nextUrl)
-                            .searchParams
-                            .get('page')
-                    );
-
-                if (
-                    !nextPage ||
-                    visited.has(nextPage)
-                ) {
-                    break;
-                }
-
-                const target =
-                    new URL(nextUrl);
-
-                target.searchParams.set(
-                    'check_session',
-                    Session.fromUrl()
-                );
-
-                Progress.update(
-                    `ヤフーフリマを確認中... ${page} → ${nextPage}ページ`,
-                    95
-                );
-
-                location.href =
-                    target.toString();
-
-                /*
-                 * ページ遷移するためここでは終了。
-                 * 次ページのcheckYahoo()から再びloadAll()
-                 * が呼ばれ、GM storageに保存した商品を
-                 * 引き継ぐ。
-                 */
-                return null;
-            }
-
-            /*
-             * 全ページ完了後、ページ蓄積データを返す
-             */
-            return [
-                ...new Map(
-                    allProducts.map(product => [
-                        product.title,
-                        product
-                    ])
-                ).values()
-            ];
+            return Pagination.loadAll({
+                storageKey: CONFIG.storage.yahooPages,
+                platform: 'ヤフーフリマ',
+                progressText: 'ヤフーフリマを確認中...',
+                progressPercent: 95,
+                paginationSelector:
+                    CONFIG.selectors.yahoo.pagination,
+                nextLabel: CONFIG.selectors.pagination.nextLabel,
+                getProducts: () => this.getProducts()
+            });
         },
 
         async check() {
@@ -1288,10 +1303,10 @@
                 mercari,
                 rakuma
             ] = await Promise.all([
-                getData(CONFIG.keys.management),
-                getData(CONFIG.keys.shops),
-                getData(CONFIG.keys.mercari),
-                getData(CONFIG.keys.rakuma)
+                getData(CONFIG.storage.management),
+                getData(CONFIG.storage.shops),
+                getData(CONFIG.storage.mercari),
+                getData(CONFIG.storage.rakuma)
             ]);
 
             if (
@@ -1300,15 +1315,7 @@
                 !mercari.length ||
                 !rakuma.length
             ) {
-                await Session.clear();
-                await setData(
-                    CONFIG.keys.yahooPages,
-                    []
-                );
-
-                Progress.remove();
-
-                alert(
+                await abortCheck(
                     'チェック用データが不足しています。\n\n' +
                     '最初から「出品チェック開始」を押してください。'
                 );
@@ -1327,17 +1334,14 @@
             }
 
             await setData(
-                CONFIG.keys.yahoo,
+                CONFIG.storage.yahoo,
                 yahoo
             );
 
             /*
              * 最後まで取得できたので一時データを削除
              */
-            await setData(
-                CONFIG.keys.yahooPages,
-                []
-            );
+            await clearPaginationState();
 
             console.log(
                 '[ヤフーフリマ] 最終取得:',
@@ -1381,173 +1385,17 @@
                 .filter(Boolean);
         },
 
-        getCurrentPage() {
-            return Number(
-                new URLSearchParams(
-                    location.search
-                ).get('page')
-            ) || 1;
-        },
-
-        getNextUrl() {
-            const pagination =
-                $(
-                    CONFIG.selectors.auctions.pagination
-                );
-
-            if (!pagination) {
-                return null;
-            }
-
-            const next =
-                $$('a', pagination).find(link =>
-                    link.textContent
-                        ?.trim()
-                        .includes('次へ')
-                );
-
-            const href =
-                next?.getAttribute('href');
-
-            return href
-                ? new URL(
-                    href,
-                    location.origin
-                ).toString()
-                : null;
-        },
-
-        getSignature() {
-            const products =
-                this.getProducts();
-
-            return [
-                this.getCurrentPage(),
-                products.length,
-                products[0] || '',
-                products[products.length - 1] || ''
-            ].join('|');
-        },
-
-        async waitForProducts() {
-            const start = Date.now();
-
-            let previous = -1;
-            let stable = 0;
-
-            while (
-                Date.now() - start <
-                CONFIG.timeout.normal
-            ) {
-                const products =
-                    this.getProducts();
-
-                if (products.length === previous) {
-                    stable++;
-                } else {
-                    stable = 0;
-                }
-
-                previous = products.length;
-
-                if (
-                    products.length &&
-                    stable >= 2
-                ) {
-                    return products;
-                }
-
-                await sleep(500);
-            }
-
-            return this.getProducts();
-        },
-
         async loadAll() {
-            let allTitles =
-                await getData(
-                    CONFIG.keys.auctionsPages,
-                    []
-                );
-
-            const visited =
-                new Set();
-
-            while (true) {
-                const page =
-                    this.getCurrentPage();
-
-                if (visited.has(page)) {
-                    console.warn(
-                        '[ヤフオク] 同一ページを検出:',
-                        page
-                    );
-                    break;
-                }
-
-                visited.add(page);
-
-                Progress.update(
-                    `ヤフオクを確認中... ${page}ページ目`,
-                    99
-                );
-
-                const titles =
-                    await this.waitForProducts();
-
-                console.log(
-                    `[ヤフオク] ${page}ページ目:`,
-                    titles.length,
-                    '件'
-                );
-
-                allTitles.push(...titles);
-                allTitles = [...new Set(allTitles)];
-
-                await setData(
-                    CONFIG.keys.auctionsPages,
-                    allTitles
-                );
-
-                const nextUrl =
-                    this.getNextUrl();
-
-                if (!nextUrl) {
-                    console.log(
-                        '[ヤフオク] 最終ページ到達'
-                    );
-                    break;
-                }
-
-                const nextPage =
-                    Number(
-                        new URL(nextUrl)
-                            .searchParams
-                            .get('page')
-                    );
-
-                if (
-                    !nextPage ||
-                    visited.has(nextPage)
-                ) {
-                    break;
-                }
-
-                const target =
-                    new URL(nextUrl);
-
-                target.searchParams.set(
-                    'check_session',
-                    Session.fromUrl()
-                );
-
-                location.href =
-                    target.toString();
-
-                return null;
-            }
-
-            return [...new Set(allTitles)];
+            return Pagination.loadAll({
+                storageKey: CONFIG.storage.auctionsPages,
+                platform: 'ヤフオク',
+                progressText: 'ヤフオクを確認中...',
+                progressPercent: 99,
+                paginationSelector:
+                    CONFIG.selectors.auctions.pagination,
+                nextLabel: CONFIG.selectors.pagination.nextLabel,
+                getProducts: () => this.getProducts()
+            });
         },
 
         async check() {
@@ -1571,11 +1419,11 @@
                 rakuma,
                 yahoo
             ] = await Promise.all([
-                getData(CONFIG.keys.management),
-                getData(CONFIG.keys.shops),
-                getData(CONFIG.keys.mercari),
-                getData(CONFIG.keys.rakuma),
-                getData(CONFIG.keys.yahoo)
+                getData(CONFIG.storage.management),
+                getData(CONFIG.storage.shops),
+                getData(CONFIG.storage.mercari),
+                getData(CONFIG.storage.rakuma),
+                getData(CONFIG.storage.yahoo)
             ]);
 
             if (
@@ -1585,14 +1433,7 @@
                 !rakuma.length ||
                 !yahoo.length
             ) {
-                await Session.clear();
-                await setData(
-                    CONFIG.keys.auctionsPages,
-                    []
-                );
-                Progress.remove();
-
-                alert(
+                await abortCheck(
                     'チェック用データが不足しています。\n\n' +
                     '最初から「出品チェック開始」を押してください。'
                 );
@@ -1607,14 +1448,11 @@
             }
 
             await setData(
-                CONFIG.keys.auctions,
+                CONFIG.storage.auctions,
                 auctions
             );
 
-            await setData(
-                CONFIG.keys.auctionsPages,
-                []
-            );
+            await clearPaginationState();
 
             Progress.update(
                 '商品を照合してCSVを作成中...',
@@ -1673,9 +1511,8 @@
                 unmatched
             );
 
-            await Session.clear();
+            await clearCheckState();
             await sleep(500);
-            Progress.remove();
 
             const missing =
                 results.filter(
@@ -1769,6 +1606,23 @@
 
     const CSV = {
 
+        mainColumns: [
+            '商品ID',
+            '商品名',
+            'メルカリShops',
+            'メルカリ',
+            'ラクマ',
+            'ヤフーフリマ',
+            'ヤフオク',
+            '判定'
+        ],
+
+        unmatchedColumns: [
+            '種類',
+            '商品名',
+            '状態'
+        ],
+
         cell(value) {
             return `"${String(value ?? '')
                 .replace(/"/g, '""')}"`;
@@ -1826,14 +1680,7 @@
                 );
 
             rows.push([
-                '商品ID',
-                '商品名',
-                'メルカリShops',
-                'メルカリ',
-                'ラクマ',
-                'ヤフーフリマ',
-                'ヤフオク',
-                '判定',
+                ...this.mainColumns,
                 '',
                 '管理表と紐づかなかった商品',
                 '',
@@ -1841,18 +1688,8 @@
             ]);
 
             rows.push([
-                '',
-                '',
-                '',
-                '',
-                '',
-                '',
-                '',
-                '',
-                '',
-                '種類',
-                '商品名',
-                '状態'
+                ...Array(this.mainColumns.length + 1).fill(''),
+                ...this.unmatchedColumns
             ]);
 
             for (let i = 0; i < maxRows; i++) {
@@ -1981,51 +1818,13 @@
 
         await Promise.all([
             setData(
-                CONFIG.keys.management,
+                CONFIG.storage.management,
                 products
             ),
+            resetCollectedData(),
 
             setData(
-                CONFIG.keys.shops,
-                []
-            ),
-
-            setData(
-                CONFIG.keys.mercari,
-                []
-            ),
-
-            setData(
-                CONFIG.keys.rakuma,
-                []
-            ),
-
-            setData(
-                CONFIG.keys.yahoo,
-                []
-            ),
-
-            setData(
-                CONFIG.keys.auctions,
-                []
-            ),
-
-            /*
-             * Yahooのページ遷移途中で使用する
-             * 一時保存領域も開始時に必ずリセット。
-             */
-            setData(
-                CONFIG.keys.yahooPages,
-                []
-            ),
-
-            setData(
-                CONFIG.keys.auctionsPages,
-                []
-            ),
-
-            setData(
-                CONFIG.keys.session,
+                CONFIG.storage.session,
                 session
             )
         ]);
@@ -2083,10 +1882,36 @@
 
         button.addEventListener(
             'click',
-            startCheck
+            () => runCheck(startCheck)
         );
 
         document.body.appendChild(button);
+    }
+
+    async function runCheck(check) {
+        try {
+            await check();
+        } catch (error) {
+            console.error(
+                '[出品チェック] 処理中にエラーが発生しました',
+                error
+            );
+
+            try {
+                await clearCheckState();
+            } catch (cleanupError) {
+                console.error(
+                    '[出品チェック] 後始末に失敗しました',
+                    cleanupError
+                );
+                Progress.remove();
+            }
+
+            alert(
+                '出品チェック中にエラーが発生しました。\n\n' +
+                '最初から「出品チェック開始」を押してください。'
+            );
+        }
     }
 
 
@@ -2095,103 +1920,25 @@
     // =========================================================
 
     async function init() {
-        const host =
-            location.hostname;
-
-        /*
-         * 管理表
-         */
-        if (
-            host ===
-            'sustre-product-sales.vercel.app'
-        ) {
+        if (location.hostname === CONFIG.hosts.management) {
             addStartButton();
             return;
         }
 
-        /*
-         * メルカリShops
-         */
-        if (
-            host ===
-            'mercari-shops.com'
-        ) {
-            if (await Session.isValid()) {
-                setTimeout(
-                    () => Shops.check(),
-                    1000
-                );
-            }
+        const checks = {
+            [CONFIG.hosts.shops]: Shops,
+            [CONFIG.hosts.mercari]: Mercari,
+            [CONFIG.hosts.rakuma]: Rakuma,
+            [CONFIG.hosts.yahoo]: Yahoo,
+            [CONFIG.hosts.auctions]: Auctions
+        };
+        const site = checks[location.hostname];
 
-            return;
-        }
-
-        /*
-         * メルカリ
-         */
-        if (
-            host ===
-            'jp.mercari.com'
-        ) {
-            if (await Session.isValid()) {
-                setTimeout(
-                    () => Mercari.check(),
-                    1000
-                );
-            }
-
-            return;
-        }
-
-        /*
-         * ラクマ
-         */
-        if (
-            host ===
-            'fril.jp'
-        ) {
-            if (await Session.isValid()) {
-                setTimeout(
-                    () => Rakuma.check(),
-                    1000
-                );
-            }
-
-            return;
-        }
-
-        /*
-         * ヤフーフリマ
-         */
-        if (
-            host ===
-            'paypayfleamarket.yahoo.co.jp'
-        ) {
-            if (await Session.isValid()) {
-                setTimeout(
-                    () => Yahoo.check(),
-                    1000
-                );
-            }
-
-            return;
-        }
-
-        /*
-         * ヤフオク
-         */
-        if (
-            host ===
-            'auctions.yahoo.co.jp'
-        ) {
-            if (await Session.isValid()) {
-                setTimeout(
-                    () => Auctions.check(),
-                    1000
-                );
-            }
-
-            return;
+        if (site && await Session.isValid()) {
+            setTimeout(
+                () => runCheck(() => site.check()),
+                1000
+            );
         }
     }
 
