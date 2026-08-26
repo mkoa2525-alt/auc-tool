@@ -8,6 +8,7 @@
 // @match        https://jp.mercari.com/mypage/listings*
 // @match        https://fril.jp/sell*
 // @match        https://paypayfleamarket.yahoo.co.jp/my/item/selling*
+// @match        https://auctions.yahoo.co.jp/my/selling*
 // @grant        GM.setValue
 // @grant        GM.getValue
 // ==/UserScript==
@@ -27,6 +28,8 @@
             rakuma: 'product_rakuma',
             yahoo: 'product_yahoo_fleamarket',
             yahooPages: 'product_yahoo_fleamarket_pages',
+            auctions: 'product_yahoo_auctions',
+            auctionsPages: 'product_yahoo_auctions_pages',
             session: 'product_check_session'
         },
 
@@ -41,7 +44,10 @@
                 'https://fril.jp/sell?is_new=0',
 
             yahoo:
-                'https://paypayfleamarket.yahoo.co.jp/my/item/selling'
+                'https://paypayfleamarket.yahoo.co.jp/my/item/selling',
+
+            auctions:
+                'https://auctions.yahoo.co.jp/my/selling'
         },
 
         selectors: {
@@ -72,6 +78,12 @@
                 product: 'a.sc-6e979adf-1.johuSL',
                 name: 'p.sc-6e979adf-5.bSuTfP',
                 pagination: 'ul.sc-b9407a2c-1.boiNyP'
+            },
+
+            auctions: {
+                product: 'li.sc-c49ee79a-0.yutKe',
+                name: 'a.sc-12236b48-0.iDOKqO',
+                pagination: '#pagination'
             }
         },
 
@@ -1334,8 +1346,279 @@
             );
 
             Progress.update(
-                '商品を照合してCSVを作成中...',
+                'ヤフオクへ移動中...',
                 98
+            );
+
+            location.href =
+                Session.add(
+                    CONFIG.urls.auctions,
+                    Session.fromUrl()
+                );
+        }
+    };
+
+
+    // =========================================================
+    // ヤフオク
+    // =========================================================
+
+    const Auctions = {
+
+        getProducts() {
+            return $$(CONFIG.selectors.auctions.product)
+                .map(record => {
+                    const title =
+                        $(
+                            CONFIG.selectors.auctions.name,
+                            record
+                        )
+                            ?.textContent
+                            ?.trim() || '';
+
+                    return title || null;
+                })
+                .filter(Boolean);
+        },
+
+        getCurrentPage() {
+            return Number(
+                new URLSearchParams(
+                    location.search
+                ).get('page')
+            ) || 1;
+        },
+
+        getNextUrl() {
+            const pagination =
+                $(
+                    CONFIG.selectors.auctions.pagination
+                );
+
+            if (!pagination) {
+                return null;
+            }
+
+            const next =
+                $$('a', pagination).find(link =>
+                    link.textContent
+                        ?.trim()
+                        .includes('次へ')
+                );
+
+            const href =
+                next?.getAttribute('href');
+
+            return href
+                ? new URL(
+                    href,
+                    location.origin
+                ).toString()
+                : null;
+        },
+
+        getSignature() {
+            const products =
+                this.getProducts();
+
+            return [
+                this.getCurrentPage(),
+                products.length,
+                products[0] || '',
+                products[products.length - 1] || ''
+            ].join('|');
+        },
+
+        async waitForProducts() {
+            const start = Date.now();
+
+            let previous = -1;
+            let stable = 0;
+
+            while (
+                Date.now() - start <
+                CONFIG.timeout.normal
+            ) {
+                const products =
+                    this.getProducts();
+
+                if (products.length === previous) {
+                    stable++;
+                } else {
+                    stable = 0;
+                }
+
+                previous = products.length;
+
+                if (
+                    products.length &&
+                    stable >= 2
+                ) {
+                    return products;
+                }
+
+                await sleep(500);
+            }
+
+            return this.getProducts();
+        },
+
+        async loadAll() {
+            let allTitles =
+                await getData(
+                    CONFIG.keys.auctionsPages,
+                    []
+                );
+
+            const visited =
+                new Set();
+
+            while (true) {
+                const page =
+                    this.getCurrentPage();
+
+                if (visited.has(page)) {
+                    console.warn(
+                        '[ヤフオク] 同一ページを検出:',
+                        page
+                    );
+                    break;
+                }
+
+                visited.add(page);
+
+                Progress.update(
+                    `ヤフオクを確認中... ${page}ページ目`,
+                    99
+                );
+
+                const titles =
+                    await this.waitForProducts();
+
+                console.log(
+                    `[ヤフオク] ${page}ページ目:`,
+                    titles.length,
+                    '件'
+                );
+
+                allTitles.push(...titles);
+                allTitles = [...new Set(allTitles)];
+
+                await setData(
+                    CONFIG.keys.auctionsPages,
+                    allTitles
+                );
+
+                const nextUrl =
+                    this.getNextUrl();
+
+                if (!nextUrl) {
+                    console.log(
+                        '[ヤフオク] 最終ページ到達'
+                    );
+                    break;
+                }
+
+                const nextPage =
+                    Number(
+                        new URL(nextUrl)
+                            .searchParams
+                            .get('page')
+                    );
+
+                if (
+                    !nextPage ||
+                    visited.has(nextPage)
+                ) {
+                    break;
+                }
+
+                const target =
+                    new URL(nextUrl);
+
+                target.searchParams.set(
+                    'check_session',
+                    Session.fromUrl()
+                );
+
+                location.href =
+                    target.toString();
+
+                return null;
+            }
+
+            return [...new Set(allTitles)];
+        },
+
+        async check() {
+            if (!await Session.isValid()) {
+                console.log(
+                    '[ヤフオク] 通常閲覧のため自動処理しません'
+                );
+                return;
+            }
+
+            Progress.create();
+            Progress.update(
+                'ヤフオクの商品を確認中...',
+                99
+            );
+
+            const [
+                management,
+                shops,
+                mercari,
+                rakuma,
+                yahoo
+            ] = await Promise.all([
+                getData(CONFIG.keys.management),
+                getData(CONFIG.keys.shops),
+                getData(CONFIG.keys.mercari),
+                getData(CONFIG.keys.rakuma),
+                getData(CONFIG.keys.yahoo)
+            ]);
+
+            if (
+                !management.length ||
+                !shops.length ||
+                !mercari.length ||
+                !rakuma.length ||
+                !yahoo.length
+            ) {
+                await Session.clear();
+                await setData(
+                    CONFIG.keys.auctionsPages,
+                    []
+                );
+                Progress.remove();
+
+                alert(
+                    'チェック用データが不足しています。\n\n' +
+                    '最初から「出品チェック開始」を押してください。'
+                );
+                return;
+            }
+
+            const auctions =
+                await this.loadAll();
+
+            if (auctions === null) {
+                return;
+            }
+
+            await setData(
+                CONFIG.keys.auctions,
+                auctions
+            );
+
+            await setData(
+                CONFIG.keys.auctionsPages,
+                []
+            );
+
+            Progress.update(
+                '商品を照合してCSVを作成中...',
+                100
             );
 
             const results =
@@ -1344,7 +1627,8 @@
                     shops,
                     mercari,
                     rakuma,
-                    yahoo
+                    yahoo,
+                    auctions
                 );
 
             const unmatched = {
@@ -1370,6 +1654,12 @@
                     Matcher.getUnmatched(
                         yahoo,
                         management
+                    ),
+
+                auctions:
+                    Matcher.getUnmatched(
+                        auctions,
+                        management
                     )
             };
 
@@ -1384,12 +1674,6 @@
             );
 
             await Session.clear();
-
-            Progress.update(
-                '完了しました！',
-                100
-            );
-
             await sleep(500);
             Progress.remove();
 
@@ -1421,7 +1705,8 @@
             shops,
             mercari,
             rakuma,
-            yahoo
+            yahoo,
+            auctions
         ) {
             return management.map(product => {
                 const shopsOk =
@@ -1448,8 +1733,17 @@
                         product.id
                     );
 
+                const auctionsOk =
+                    Matcher.exists(
+                        auctions,
+                        product.id
+                    );
+
                 const ok =
-                    (shopsOk || Boolean(mercariProduct)) && rakumaOk && Boolean(yahooProduct);
+                    (shopsOk || Boolean(mercariProduct)) &&
+                    rakumaOk &&
+                    Boolean(yahooProduct) &&
+                    auctionsOk;
 
                 return {
                     id: product.id,
@@ -1458,6 +1752,7 @@
                     mercari: mercariProduct,
                     rakuma: rakumaOk,
                     yahoo: yahooProduct,
+                    auctions: auctionsOk,
                     result:
                         ok
                             ? '✅'
@@ -1515,6 +1810,12 @@
                     'ヤフーフリマ',
                     product.title,
                     product.status
+                ]),
+
+                ...unmatched.auctions.map(title => [
+                    'ヤフオク',
+                    title,
+                    ''
                 ])
             ];
 
@@ -1531,6 +1832,7 @@
                 'メルカリ',
                 'ラクマ',
                 'ヤフーフリマ',
+                'ヤフオク',
                 '判定',
                 '',
                 '管理表と紐づかなかった商品',
@@ -1539,6 +1841,7 @@
             ]);
 
             rows.push([
+                '',
                 '',
                 '',
                 '',
@@ -1585,6 +1888,12 @@
                         ? this.platformStatus(
                             result.yahoo
                         )
+                        : '',
+
+                    result
+                        ? result.auctions
+                            ? '○'
+                            : '×'
                         : '',
 
                     result?.result ?? '',
@@ -1696,12 +2005,22 @@
                 []
             ),
 
+            setData(
+                CONFIG.keys.auctions,
+                []
+            ),
+
             /*
              * Yahooのページ遷移途中で使用する
              * 一時保存領域も開始時に必ずリセット。
              */
             setData(
                 CONFIG.keys.yahooPages,
+                []
+            ),
+
+            setData(
+                CONFIG.keys.auctionsPages,
                 []
             ),
 
@@ -1851,6 +2170,23 @@
             if (await Session.isValid()) {
                 setTimeout(
                     () => Yahoo.check(),
+                    1000
+                );
+            }
+
+            return;
+        }
+
+        /*
+         * ヤフオク
+         */
+        if (
+            host ===
+            'auctions.yahoo.co.jp'
+        ) {
+            if (await Session.isValid()) {
+                setTimeout(
+                    () => Auctions.check(),
                     1000
                 );
             }
