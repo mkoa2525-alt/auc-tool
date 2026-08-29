@@ -68,7 +68,9 @@
                 row: 'tr.product-data-row',
                 id: 'input[name$=":display_id"]',
                 name: 'input[name$=":product_name"]',
-                status: 'select[name$=":status_id"]'
+                status: 'select[name$=":status_id"]',
+                expectedSalePrice: 'input[name$=":expected_sale_price"]',
+                salePriceInput: 'input[name$=":sale_price_input"]'
             },
 
             shops: {
@@ -355,6 +357,29 @@
 
     const Management = {
 
+        readInputValue(row, selector, suffix) {
+            const field =
+                $(selector, row) ||
+                row.querySelector(`input[name$="${suffix}"]`) ||
+                row.querySelector(`input[name$=":${suffix}"]`);
+
+            return field?.value ?? '';
+        },
+
+        normalizePrice(value) {
+            const raw = String(value ?? '').trim();
+
+            if (!raw) {
+                return '';
+            }
+
+            const normalized = raw
+                .replace(/[\s,円]/g, '')
+                .replace(/[−－]/g, '-');
+
+            return normalized;
+        },
+
         getProducts() {
             return $$(CONFIG.selectors.management.row)
                 .filter(row => {
@@ -384,7 +409,25 @@
                             row
                         )
                             ?.value
-                            ?.trim() || ''
+                            ?.trim() || '',
+
+                    expectedSalePrice:
+                        this.normalizePrice(
+                            this.readInputValue(
+                                row,
+                                CONFIG.selectors.management.expectedSalePrice,
+                                'expected_sale_price'
+                            )
+                        ),
+
+                    salePriceInput:
+                        this.normalizePrice(
+                            this.readInputValue(
+                                row,
+                                CONFIG.selectors.management.salePriceInput,
+                                'sale_price_input'
+                            )
+                        )
                 }))
                 .filter(product => product.id);
         }
@@ -1585,6 +1628,8 @@
                 return {
                     id: product.id,
                     name: product.name,
+                    expectedSalePrice: product.expectedSalePrice || '',
+                    salePriceInput: product.salePriceInput || '',
                     shops: shopsOk,
                     mercari: mercariProduct,
                     rakuma: rakumaOk,
@@ -1609,6 +1654,8 @@
         mainColumns: [
             '商品ID',
             '商品名',
+            '予想売値',
+            '手入力売値',
             'メルカリShops',
             'メルカリ',
             'ラクマ',
@@ -1702,6 +1749,8 @@
                 rows.push([
                     result?.id ?? '',
                     result?.name ?? '',
+                    result?.expectedSalePrice ?? '',
+                    result?.salePriceInput ?? '',
 
                     result
                         ? result.shops
