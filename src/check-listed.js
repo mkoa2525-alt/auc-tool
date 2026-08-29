@@ -137,6 +137,36 @@
     const setData = (key, value) =>
         GM.setValue(key, value);
 
+    const Price = {
+        normalize(value) {
+            const raw = String(value ?? '').trim();
+
+            if (!raw) {
+                return '';
+            }
+
+            return raw
+                .replace(/[\s,円]/g, '')
+                .replace(/[−－]/g, '-');
+        },
+
+        formatNumber(value) {
+            const raw = String(value ?? '').trim();
+
+            if (!raw) {
+                return '';
+            }
+
+            const digits = raw.replace(/[^\d]/g, '');
+
+            if (!digits) {
+                return '';
+            }
+
+            return Number(digits).toLocaleString('en-US');
+        }
+    };
+
     const removeElement = selector =>
         $(selector)?.remove();
 
@@ -367,17 +397,11 @@
         },
 
         normalizePrice(value) {
-            const raw = String(value ?? '').trim();
+            return Price.normalize(value);
+        },
 
-            if (!raw) {
-                return '';
-            }
-
-            const normalized = raw
-                .replace(/[\s,円]/g, '')
-                .replace(/[−－]/g, '-');
-
-            return normalized;
+        formatPriceNumber(value) {
+            return Price.formatNumber(value);
         },
 
         getProducts() {
@@ -412,20 +436,24 @@
                             ?.trim() || '',
 
                     expectedSalePrice:
-                        this.normalizePrice(
-                            this.readInputValue(
-                                row,
-                                CONFIG.selectors.management.expectedSalePrice,
-                                'expected_sale_price'
+                        this.formatPriceNumber(
+                            this.normalizePrice(
+                                this.readInputValue(
+                                    row,
+                                    CONFIG.selectors.management.expectedSalePrice,
+                                    'expected_sale_price'
+                                )
                             )
                         ),
 
                     salePriceInput:
-                        this.normalizePrice(
-                            this.readInputValue(
-                                row,
-                                CONFIG.selectors.management.salePriceInput,
-                                'sale_price_input'
+                        this.formatPriceNumber(
+                            this.normalizePrice(
+                                this.readInputValue(
+                                    row,
+                                    CONFIG.selectors.management.salePriceInput,
+                                    'sale_price_input'
+                                )
                             )
                         )
                 }))
@@ -441,24 +469,29 @@
     const Matcher = {
 
         matches(title, id) {
+            const text =
+                typeof title === 'string'
+                    ? title
+                    : title?.title || '';
+
             return Boolean(
-                title &&
+                text &&
                 id &&
-                title.includes(id)
+                text.includes(id)
             );
         },
 
         find(products, id) {
             return (
                 products.find(product =>
-                    this.matches(product.title, id)
+                    this.matches(product, id)
                 ) || null
             );
         },
 
-        exists(titles, id) {
-            return titles.some(title =>
-                this.matches(title, id)
+        exists(items, id) {
+            return items.some(item =>
+                this.matches(item, id)
             );
         },
 
@@ -504,14 +537,36 @@
 
         getProducts() {
             return $$(CONFIG.selectors.shops.product)
-                .map(record =>
-                    $(
-                        CONFIG.selectors.shops.name,
-                        record
-                    )
-                        ?.textContent
-                        ?.trim() || ''
-                )
+                .map(record => {
+                    const title =
+                        $(
+                            CONFIG.selectors.shops.name,
+                            record
+                        )
+                            ?.textContent
+                            ?.trim() || '';
+
+                    const price =
+                        Management.formatPriceNumber(
+                            record.querySelector('.css-1wgdpkr')
+                                ?.textContent
+                                ?.trim() ||
+                            record.querySelector('[data-testid="price"]')
+                                ?.textContent
+                                ?.trim() ||
+                            record.querySelector('.deal-item__price')
+                                ?.textContent
+                                ?.trim() ||
+                            record.querySelector('.sc-9dbc04ce-0.kXaiYU')
+                                ?.textContent
+                                ?.trim() ||
+                            ''
+                        );
+
+                    return title
+                        ? { title, price }
+                        : null;
+                })
                 .filter(Boolean);
         },
 
@@ -653,8 +708,26 @@
                         return null;
                     }
 
+                    const price =
+                        Management.formatPriceNumber(
+                            record.querySelector('[data-testid="price"]')
+                                ?.textContent
+                                ?.trim() ||
+                            record.querySelector('.css-1wgdpkr')
+                                ?.textContent
+                                ?.trim() ||
+                            record.querySelector('.deal-item__price')
+                                ?.textContent
+                                ?.trim() ||
+                            record.querySelector('.sc-9dbc04ce-0.kXaiYU')
+                                ?.textContent
+                                ?.trim() ||
+                            ''
+                        );
+
                     return {
                         title,
+                        price,
                         status:
                             record.textContent
                                 ?.includes('公開停止中')
@@ -825,14 +898,60 @@
 
         getProducts() {
             return $$(CONFIG.selectors.rakuma.product)
-                .map(record =>
-                    $(
-                        CONFIG.selectors.rakuma.name,
-                        record
-                    )
-                        ?.textContent
-                        ?.trim() || ''
-                )
+                .map(record => {
+                    const title =
+                        $(
+                            CONFIG.selectors.rakuma.name,
+                            record
+                        )
+                            ?.textContent
+                            ?.trim() || '';
+
+                    if (!title) {
+                        return null;
+                    }
+
+                    const allAttributeText =
+                        record.getAttributeNames()
+                            .map(name =>
+                                record.getAttribute(name) || ''
+                            )
+                            .join(' ');
+
+                    const inlinePrice =
+                        (
+                            record.getAttribute('onclick') || ''
+                        ).match(/(?:["'&]|&quot;)?price(?:["'&]|&quot;)?\s*:\s*(\d{3,})/i)?.[1] ||
+                        (
+                            record.outerHTML || ''
+                        ).match(/(?:["'&]|&quot;)?price(?:["'&]|&quot;)?\s*:\s*(\d{3,})/i)?.[1] ||
+                        allAttributeText.match(/(?:["'&]|&quot;)?price(?:["'&]|&quot;)?\s*:\s*(\d{3,})/i)?.[1] ||
+                        '';
+
+                    const price =
+                        Management.formatPriceNumber(
+                            record.querySelector('.deal-item__price')
+                                ?.textContent
+                                ?.trim() ||
+                            record.querySelector('[data-test="item-price"]')
+                                ?.textContent
+                                ?.trim() ||
+                            record.querySelector('[data-testid="price"]')
+                                ?.textContent
+                                ?.trim() ||
+                            record.querySelector('.deal-item__price span')
+                                ?.textContent
+                                ?.trim() ||
+                            (inlinePrice ? String(inlinePrice) : '') ||
+                            ''
+                        );
+
+                    return {
+                        title,
+                        price,
+                        status: '公開中'
+                    };
+                })
                 .filter(Boolean);
         },
 
@@ -900,8 +1019,8 @@
             return [
                 this.getCurrentPage(),
                 products.length,
-                products[0] || '',
-                products[products.length - 1] || ''
+                products[0]?.title || '',
+                products[products.length - 1]?.title || ''
             ].join('|');
         },
 
@@ -1302,8 +1421,24 @@
                         text.includes('出品停止中') ||
                         text.includes('停止中');
 
+                    const price =
+                        Management.formatPriceNumber(
+                            record.querySelector('.sc-9dbc04ce-0.kXaiYU')
+                                ?.textContent
+                                ?.trim() ||
+                            record.querySelector('[data-testid="price"]')
+                                ?.textContent
+                                ?.trim() ||
+                            Array.from(record.querySelectorAll('p, span'))
+                                .find(node => /[0-9,]+円/.test(node.textContent || ''))
+                                ?.textContent
+                                ?.trim() ||
+                            ''
+                        );
+
                     return {
                         title,
+                        price,
                         status:
                             stopped
                                 ? '公開停止中'
@@ -1423,7 +1558,32 @@
                             ?.textContent
                             ?.trim() || '';
 
-                    return title || null;
+                    if (!title) {
+                        return null;
+                    }
+
+                    const currentPrice =
+                        record.querySelector('.sc-98b8db6c-2')
+                            ?.textContent
+                            ?.replace(/\s+/g, '')
+                            ?.trim() || '';
+
+                    const buyNowPrice =
+                        record.querySelector('.sc-98b8db6c-3')
+                            ?.textContent
+                            ?.replace(/\s+/g, '')
+                            ?.trim() || '';
+
+                    const price =
+                        currentPrice && buyNowPrice
+                            ? `${Management.formatPriceNumber(currentPrice)}（即決${Management.formatPriceNumber(buyNowPrice)}）`
+                            : Management.formatPriceNumber(currentPrice || buyNowPrice || '');
+
+                    return {
+                        title,
+                        price,
+                        status: '公開中'
+                    };
                 })
                 .filter(Boolean);
         },
@@ -1589,11 +1749,14 @@
             auctions
         ) {
             return management.map(product => {
-                const shopsOk =
-                    Matcher.exists(
+                const shopsProduct =
+                    Matcher.find(
                         shops,
                         product.id
                     );
+
+                const shopsOk =
+                    Boolean(shopsProduct);
 
                 const mercariProduct =
                     Matcher.find(
@@ -1601,11 +1764,14 @@
                         product.id
                     );
 
-                const rakumaOk =
-                    Matcher.exists(
+                const rakumaProduct =
+                    Matcher.find(
                         rakuma,
                         product.id
                     );
+
+                const rakumaOk =
+                    Boolean(rakumaProduct);
 
                 const yahooProduct =
                     Matcher.find(
@@ -1613,11 +1779,14 @@
                         product.id
                     );
 
-                const auctionsOk =
-                    Matcher.exists(
+                const auctionsProduct =
+                    Matcher.find(
                         auctions,
                         product.id
                     );
+
+                const auctionsOk =
+                    Boolean(auctionsProduct);
 
                 const ok =
                     (shopsOk || Boolean(mercariProduct)) &&
@@ -1630,11 +1799,12 @@
                     name: product.name,
                     expectedSalePrice: product.expectedSalePrice || '',
                     salePriceInput: product.salePriceInput || '',
-                    shops: shopsOk,
+                    shops: shopsProduct,
+                    shopsOk,
                     mercari: mercariProduct,
-                    rakuma: rakumaOk,
+                    rakuma: rakumaProduct,
                     yahoo: yahooProduct,
-                    auctions: auctionsOk,
+                    auctions: auctionsProduct,
                     result:
                         ok
                             ? '✅'
@@ -1661,7 +1831,7 @@
             'ラクマ',
             'ヤフーフリマ',
             'ヤフオク',
-            '判定'
+            '出品漏れなし'
         ],
 
         unmatchedColumns: [
@@ -1680,6 +1850,16 @@
                 return '×';
             }
 
+            if (typeof product === 'string') {
+                return '○';
+            }
+
+            if (product.price) {
+                return product.status === '公開停止中'
+                    ? `${product.price} / 公開停止中`
+                    : product.price;
+            }
+
             return product.status === '公開停止中'
                 ? '○ 公開停止中'
                 : '○';
@@ -1695,28 +1875,28 @@
                     product.status
                 ]),
 
-                ...unmatched.shops.map(title => [
+                ...unmatched.shops.map(item => [
                     'メルカリShops',
-                    title,
-                    ''
+                    typeof item === 'string' ? item : item?.title || '',
+                    typeof item === 'string' ? '' : item?.price || ''
                 ]),
 
-                ...unmatched.rakuma.map(title => [
+                ...unmatched.rakuma.map(item => [
                     'ラクマ',
-                    title,
-                    ''
+                    typeof item === 'string' ? item : item?.title || '',
+                    typeof item === 'string' ? '' : item?.price || ''
                 ]),
 
-                ...unmatched.yahoo.map(product => [
+                ...unmatched.yahoo.map(item => [
                     'ヤフーフリマ',
-                    product.title,
-                    product.status
+                    typeof item === 'string' ? item : item?.title || '',
+                    typeof item === 'string' ? '' : item?.status || ''
                 ]),
 
-                ...unmatched.auctions.map(title => [
+                ...unmatched.auctions.map(item => [
                     'ヤフオク',
-                    title,
-                    ''
+                    typeof item === 'string' ? item : item?.title || '',
+                    typeof item === 'string' ? '' : item?.price || ''
                 ])
             ];
 
@@ -1754,32 +1934,32 @@
 
                     result
                         ? result.shops
-                            ? '○'
-                            : '×'
+                            ? result.shops.price || '❌'
+                            : '❌'
                         : '',
 
                     result
-                        ? this.platformStatus(
-                            result.mercari
-                        )
+                        ? result.mercari
+                            ? this.platformStatus(result.mercari)
+                            : '❌'
                         : '',
 
                     result
                         ? result.rakuma
-                            ? '○'
-                            : '×'
+                            ? this.platformStatus(result.rakuma)
+                            : '❌'
                         : '',
 
                     result
-                        ? this.platformStatus(
-                            result.yahoo
-                        )
+                        ? result.yahoo
+                            ? this.platformStatus(result.yahoo)
+                            : '❌'
                         : '',
 
                     result
                         ? result.auctions
-                            ? '○'
-                            : '×'
+                            ? this.platformStatus(result.auctions)
+                            : '❌'
                         : '',
 
                     result?.result ?? '',
@@ -1899,7 +2079,19 @@
     // =========================================================
 
     function addStartButton() {
-        if ($('#management-check-button')) {
+        const existing =
+            document.getElementById('management-check-button');
+
+        if (existing) {
+            if (!existing.isConnected) {
+                const mountTarget =
+                    document.body || document.documentElement;
+
+                if (mountTarget) {
+                    mountTarget.appendChild(existing);
+                }
+            }
+
             return;
         }
 
@@ -1934,7 +2126,15 @@
             () => runCheck(startCheck)
         );
 
-        document.body.appendChild(button);
+        const mountTarget =
+            document.body || document.documentElement;
+
+        if (!mountTarget) {
+            setTimeout(addStartButton, 200);
+            return;
+        }
+
+        mountTarget.appendChild(button);
     }
 
     async function runCheck(check) {
@@ -1971,6 +2171,23 @@
     async function init() {
         if (location.hostname === CONFIG.hosts.management) {
             addStartButton();
+
+            if (!window.__productCheckButtonObserver__) {
+                window.__productCheckButtonObserver__ = new MutationObserver(() => {
+                    if (!document.getElementById('management-check-button')) {
+                        addStartButton();
+                    }
+                });
+
+                window.__productCheckButtonObserver__.observe(
+                    document.documentElement,
+                    {
+                        childList: true,
+                        subtree: true
+                    }
+                );
+            }
+
             return;
         }
 
