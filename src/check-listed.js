@@ -69,6 +69,8 @@
                 id: 'input[name$=":display_id"]',
                 name: 'input[name$=":product_name"]',
                 status: 'select[name$=":status_id"]',
+                listedDays: '[data-product-output-field="listed_days"]',
+                purchaseReferencePrice: 'input[name$=":purchase_reference_price"]',
                 expectedSalePrice: 'input[name$=":expected_sale_price"]',
                 salePriceInput: 'input[name$=":sale_price_input"]'
             },
@@ -164,6 +166,108 @@
             }
 
             return Number(digits).toLocaleString('en-US');
+        }
+    };
+
+    const Stats = {
+        toNumber(value) {
+            const raw = String(value ?? '').trim();
+            const digits = raw.replace(/[^\d]/g, '');
+
+            if (!digits) {
+                return 0;
+            }
+
+            return Number(digits);
+        },
+
+        extractShops(record) {
+            const values = [...record.querySelectorAll('.css-70qvj9')]
+                .map(node => {
+                    const text = node.querySelector('p, span')?.textContent || '';
+                    return /時間前|分前|秒前|日前|時間$|日$/.test(text)
+                        ? null
+                        : this.toNumber(text);
+                })
+                .filter(value => Number.isFinite(value) && value >= 0);
+
+            return {
+                likeCount: values[0] ?? 0,
+                viewCount: values[1] ?? 0
+            };
+        },
+
+        extractMercari(record) {
+            const countBlocks = [...record.querySelectorAll('.fPSBzf.klFuku.dpfntZ.gasSYy > .fPSBzf')];
+
+            const likeCount = countBlocks
+                .find(block => (block.innerHTML || '').includes('M6.89 2.965'))
+                ?.querySelector('span')?.textContent || 0;
+
+            const viewCount = countBlocks
+                .find(block => (block.innerHTML || '').includes('M2.125 12.41'))
+                ?.querySelector('span')?.textContent || 0;
+
+            return {
+                likeCount: this.toNumber(likeCount),
+                viewCount: this.toNumber(viewCount)
+            };
+        },
+
+        extractRakuma(record) {
+            const likeNode = record.querySelector('[data-test="item_like_count"], [data-testid="item_like_count"]');
+            const viewNode = record.querySelector('[data-test="item_view_count"], [data-testid="item_view_count"]');
+
+            return {
+                likeCount: likeNode ? this.toNumber(likeNode.textContent) : 0,
+                viewCount: viewNode ? this.toNumber(viewNode.textContent) : 0
+            };
+        },
+
+        extractYahoo(record) {
+            const likeNode = record.querySelector('img[src*="icon_favorite"], img[src*="favorite"]')?.closest('div')?.querySelector('span');
+            const viewNode = record.querySelector('img[src*="icon_eye"], img[src*="eye"]')?.closest('div')?.querySelector('span');
+
+            return {
+                likeCount: likeNode ? this.toNumber(likeNode.textContent) : 0,
+                viewCount: viewNode ? this.toNumber(viewNode.textContent) : 0
+            };
+        },
+
+        extractAuctions(record) {
+            const watchNode = [...record.querySelectorAll('li')]
+                .find(li => /ウォッチリスト登録数|favorite|watch/i.test(li.textContent || ''));
+
+            return {
+                likeCount: watchNode ? this.toNumber(watchNode.textContent) : 0
+            };
+        },
+
+        extract(record) {
+            if (record.querySelector('[data-test="item_like_count"], [data-testid="item_like_count"]')) {
+                return this.extractRakuma(record);
+            }
+
+            if (record.querySelector('img[src*="icon_favorite"], img[src*="icon_eye"], img[src*="favorite"], img[src*="eye"]')) {
+                return this.extractYahoo(record);
+            }
+
+            if (record.querySelector('.css-70qvj9')) {
+                return this.extractShops(record);
+            }
+
+            if (record.querySelector('svg') && record.querySelector('span.dpfntZ')) {
+                return this.extractMercari(record);
+            }
+
+            if (record.querySelector('li') && /ウォッチリスト登録数|入札数|watch|bid/i.test(record.textContent || '')) {
+                return this.extractAuctions(record);
+            }
+
+            return {
+                likeCount: 0,
+                viewCount: 0
+            };
         }
     };
 
@@ -396,12 +500,38 @@
             return field?.value ?? '';
         },
 
+        readTextValue(row, selector, suffix) {
+            const field =
+                $(selector, row) ||
+                row.querySelector(`[data-product-output-field="${suffix}"]`) ||
+                row.querySelector(`*[name$="${suffix}"]`) ||
+                row.querySelector(`*[name$=":${suffix}"]`);
+
+            return field?.value ?? field?.textContent ?? '';
+        },
+
         normalizePrice(value) {
             return Price.normalize(value);
         },
 
         formatPriceNumber(value) {
             return Price.formatNumber(value);
+        },
+
+        formatListedDays(value) {
+            const raw = String(value ?? '').trim();
+
+            if (!raw) {
+                return '';
+            }
+
+            const digits = raw.replace(/[^\d]/g, '');
+
+            if (!digits) {
+                return '';
+            }
+
+            return `${Number(digits)}日`;
         },
 
         getProducts() {
@@ -434,6 +564,26 @@
                         )
                             ?.value
                             ?.trim() || '',
+
+                    listedDays:
+                        this.formatListedDays(
+                            this.readTextValue(
+                                row,
+                                CONFIG.selectors.management.listedDays,
+                                'listed_days'
+                            )
+                        ),
+
+                    purchaseReferencePrice:
+                        this.formatPriceNumber(
+                            this.normalizePrice(
+                                this.readInputValue(
+                                    row,
+                                    CONFIG.selectors.management.purchaseReferencePrice,
+                                    'purchase_reference_price'
+                                )
+                            )
+                        ),
 
                     expectedSalePrice:
                         this.formatPriceNumber(
@@ -563,8 +713,12 @@
                             ''
                         );
 
+                    const counts = title
+                        ? Stats.extract(record)
+                        : { likeCount: 0, viewCount: 0 };
+
                     return title
-                        ? { title, price }
+                        ? { title, price, ...counts }
                         : null;
                 })
                 .filter(Boolean);
@@ -725,9 +879,12 @@
                             ''
                         );
 
+                    const counts = Stats.extract(record);
+
                     return {
                         title,
                         price,
+                        ...counts,
                         status:
                             record.textContent
                                 ?.includes('公開停止中')
@@ -946,9 +1103,12 @@
                             ''
                         );
 
+                    const counts = Stats.extract(record);
+
                     return {
                         title,
                         price,
+                        ...counts,
                         status: '公開中'
                     };
                 })
@@ -1436,9 +1596,12 @@
                             ''
                         );
 
+                    const counts = Stats.extract(record);
+
                     return {
                         title,
                         price,
+                        ...counts,
                         status:
                             stopped
                                 ? '公開停止中'
@@ -1579,9 +1742,12 @@
                             ? `${Management.formatPriceNumber(currentPrice)}（即決${Management.formatPriceNumber(buyNowPrice)}）`
                             : Management.formatPriceNumber(currentPrice || buyNowPrice || '');
 
+                    const counts = Stats.extract(record);
+
                     return {
                         title,
                         price,
+                        ...counts,
                         status: '公開中'
                     };
                 })
@@ -1797,6 +1963,8 @@
                 return {
                     id: product.id,
                     name: product.name,
+                    listedDays: product.listedDays || '',
+                    purchaseReferencePrice: product.purchaseReferencePrice || '',
                     expectedSalePrice: product.expectedSalePrice || '',
                     salePriceInput: product.salePriceInput || '',
                     shops: shopsProduct,
@@ -1824,14 +1992,16 @@
         mainColumns: [
             '商品ID',
             '商品名',
+            '出品漏れ\nチェック',
+            '出品日数',
+            '仕入参考価格',
             '予想売値',
             '手入力売値',
-            'メルカリShops',
-            'メルカリ',
-            'ラクマ',
-            'ヤフーフリマ',
-            'ヤフオク',
-            '出品漏れなし'
+            'メルカリShops\n価格\nいいね数\n閲覧数',
+            'メルカリ\n価格\nいいね数\n閲覧数',
+            'ラクマ\n価格\nいいね数\n閲覧数',
+            'ヤフーフリマ\n価格\nいいね数\n閲覧数',
+            'ヤフオク\n価格'
         ],
 
         unmatchedColumns: [
@@ -1865,6 +2035,38 @@
                 : '○';
         },
 
+        platformSummary(product, includeLikes = true, includeViews = true) {
+            if (!product) {
+                return '❌';
+            }
+
+            if (typeof product === 'string') {
+                return '○';
+            }
+
+            const lines = [];
+
+            if (product.price) {
+                lines.push(product.price);
+            } else if (product.status === '公開停止中') {
+                lines.push('○');
+            }
+
+            if (includeLikes && Number.isFinite(Number(product.likeCount))) {
+                lines.push(`👍${Number(product.likeCount)}`);
+            }
+
+            if (includeViews && Number.isFinite(Number(product.viewCount))) {
+                lines.push(`👀${Number(product.viewCount)}`);
+            }
+
+            if (product.status === '公開停止中' && !lines.includes('公開停止中')) {
+                lines.push('公開停止中');
+            }
+
+            return lines.length ? lines.join('\n') : '○';
+        },
+
         download(results, unmatched) {
             const rows = [];
 
@@ -1893,11 +2095,6 @@
                     typeof item === 'string' ? '' : item?.status || ''
                 ]),
 
-                ...unmatched.auctions.map(item => [
-                    'ヤフオク',
-                    typeof item === 'string' ? item : item?.title || '',
-                    typeof item === 'string' ? '' : item?.price || ''
-                ])
             ];
 
             const maxRows =
@@ -1929,40 +2126,21 @@
                 rows.push([
                     result?.id ?? '',
                     result?.name ?? '',
+                    result?.result ?? '',
+                    result?.listedDays ?? '',
+                    result?.purchaseReferencePrice ?? '',
                     result?.expectedSalePrice ?? '',
                     result?.salePriceInput ?? '',
 
-                    result
-                        ? result.shops
-                            ? result.shops.price || '❌'
-                            : '❌'
-                        : '',
-
-                    result
-                        ? result.mercari
-                            ? this.platformStatus(result.mercari)
-                            : '❌'
-                        : '',
-
-                    result
-                        ? result.rakuma
-                            ? this.platformStatus(result.rakuma)
-                            : '❌'
-                        : '',
-
-                    result
-                        ? result.yahoo
-                            ? this.platformStatus(result.yahoo)
-                            : '❌'
-                        : '',
-
+                    this.platformSummary(result?.shops),
+                    this.platformSummary(result?.mercari),
+                    this.platformSummary(result?.rakuma),
+                    this.platformSummary(result?.yahoo),
                     result
                         ? result.auctions
                             ? this.platformStatus(result.auctions)
                             : '❌'
                         : '',
-
-                    result?.result ?? '',
 
                     '',
 
