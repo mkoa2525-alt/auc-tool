@@ -8,7 +8,7 @@
    - Execute as: **Me**
    - Who has access: **Anyone**
 6. Copy the deployed web app URL.
-7. Paste the URL and the same token into `CONFIG.urls` in `src/check-listed.js`.
+7. Paste the URL and the same token into `CONFIG.urls` in `src/check-listed.user.js`.
 8. Update the userscript.
 
 The script maintains a `check_results_latest` sheet automatically. It contains
