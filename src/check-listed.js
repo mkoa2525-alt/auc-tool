@@ -2,7 +2,7 @@
 // @name         商品管理表 ⇔ メルカリShops ⇔ メルカリ ⇔ ラクマ ⇔ ヤフーフリマ ⇔ ヤフオク 出品チェック
 // @namespace    https://sustre-product-sales.vercel.app/products
 // @version      16.0.0
-// @description  商品管理表・メルカリShops・メルカリ・ラクマ・ヤフーフリマ・ヤフオクの出品状況をチェックしてCSV出力
+// @description  商品管理表・メルカリShops・メルカリ・ラクマ・ヤフーフリマ・ヤフオクの出品状況をチェックしてスプレッドシートへ保存
 // @match        https://sustre-product-sales.vercel.app/*
 // @match        https://mercari-shops.com/seller/shops/*/products*
 // @match        https://jp.mercari.com/mypage/listings*
@@ -11,6 +11,9 @@
 // @match        https://auctions.yahoo.co.jp/my/selling*
 // @grant        GM.setValue
 // @grant        GM.getValue
+// @grant        GM.xmlHttpRequest
+// @connect      script.google.com
+// @connect      script.googleusercontent.com
 // ==/UserScript==
 
 (() => {
@@ -47,6 +50,9 @@
         },
 
         urls: {
+            spreadsheetWebhook: 'https://script.google.com/macros/s/AKfycbzE6IjG6o_dYDdlczvM5nS79dvmML0YEZ771_Ec-v6vUo3tEpKilXDE2PjBk-Cj5ft7Yw/exec',
+            spreadsheetWebhookToken: 'CHANGE_ME_TO_A_RANDOM_TOKEN',
+
             shops:
                 'https://mercari-shops.com/seller/shops/9hgq4s8br8tCkqjrszDsPP/products?tab=opened',
 
@@ -116,6 +122,153 @@
             mercariLoadMore: 60000,
             mercariPageChange: 10000,
             pageChange: 15000
+        }
+    };
+
+    const SpreadsheetSync = {
+
+        dateString(date = new Date()) {
+            return [
+                date.getFullYear(),
+                String(date.getMonth() + 1).padStart(2, '0'),
+                String(date.getDate()).padStart(2, '0')
+            ].join('-');
+        },
+
+        dateTimeString(date = new Date()) {
+            return `${this.dateString(date)} ${String(date.getHours()).padStart(2, '0')}:` +
+                `${String(date.getMinutes()).padStart(2, '0')}:` +
+                `${String(date.getSeconds()).padStart(2, '0')}`;
+        },
+
+        metricsRows(results, capturedAt = new Date()) {
+            const capturedDate = this.dateTimeString(capturedAt);
+            const platforms = [
+                ['メルカリShops', 'shops'],
+                ['メルカリ', 'mercari'],
+                ['ラクマ', 'rakuma'],
+                ['ヤフーフリマ', 'yahoo'],
+                ['ヤフオク', 'auctions']
+            ];
+
+            return results.flatMap(result =>
+                platforms.map(([platform, key]) => {
+                    const product = result[key];
+
+                    if (!product) {
+                        return null;
+                    }
+
+                    return {
+                        capturedDate,
+                        productId: result.id,
+                        productName: result.name,
+                        platform,
+                        listedDays: result.listedDays || '',
+                        price: product?.price || '',
+                        likeCount: product?.likeCount ?? '',
+                        viewCount: product?.viewCount ?? ''
+                    };
+                }).filter(Boolean)
+            );
+        },
+
+        activeProducts(results) {
+            return results.map(result => ({
+                productId: result.id,
+                productName: result.name
+            }));
+        },
+
+        request(url, payload) {
+            return new Promise((resolve, reject) => {
+                if (
+                    typeof GM === 'undefined' ||
+                    typeof GM.xmlHttpRequest !== 'function'
+                ) {
+                    reject(new Error('GM.xmlHttpRequest が利用できません'));
+                    return;
+                }
+
+                GM.xmlHttpRequest({
+                    method: 'POST',
+                    url,
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    data: JSON.stringify(payload),
+                    timeout: 300000,
+                    onload: response => {
+                        if (response.status < 200 || response.status >= 300) {
+                            reject(new Error(`HTTP ${response.status}`));
+                            return;
+                        }
+
+                        let body;
+
+                        try {
+                            body = JSON.parse(response.responseText || '{}');
+                        } catch {
+                            reject(new Error('Apps Scriptの応答を解析できません'));
+                            return;
+                        }
+
+                        if (body.ok !== true) {
+                            reject(new Error(body.error || 'Apps Scriptがエラーを返しました'));
+                            return;
+                        }
+
+                        resolve(body);
+                    },
+                    onerror: () => reject(new Error('スプレッドシートへの送信に失敗しました')),
+                    ontimeout: () => reject(new Error('スプレッドシートへの送信がタイムアウトしました'))
+                });
+            });
+        },
+
+        async send(results, unmatched) {
+            const url = CONFIG.urls.spreadsheetWebhook.trim();
+
+            if (!url) {
+                return true;
+            }
+
+            try {
+                const capturedAt = new Date();
+                const latestRows = ResultsOutput.buildLatestRows(results);
+                const metricsRows = this.metricsRows(results, capturedAt);
+                const activeProducts = this.activeProducts(results);
+                const unmatchedRows = ResultsOutput.buildUnmatchedRows(unmatched);
+
+                Progress.update(
+                    `スプレッドシートへ送信中...（${results.length}商品・履歴${metricsRows.length}件）`,
+                    96
+                );
+
+                await this.request(url, {
+                    source: 'auc-tool',
+                    token: CONFIG.urls.spreadsheetWebhookToken,
+                    sentAt: capturedAt.toISOString(),
+                    latestRows,
+                    metricsRows,
+                    activeProducts,
+                    unmatchedRows
+                });
+
+                Progress.update(
+                    'スプレッドシートへの保存が完了しました。',
+                    100
+                );
+                console.log('[スプレッドシート] 日次データを送信しました');
+                return true;
+            } catch (error) {
+                console.error('[スプレッドシート] 送信失敗:', error);
+                alert(
+                    'スプレッドシートへの送信に失敗しました。\n\n' +
+                    `${error.message}`
+                );
+                return false;
+            }
         }
     };
 
@@ -507,7 +660,11 @@
                 row.querySelector(`*[name$="${suffix}"]`) ||
                 row.querySelector(`*[name$=":${suffix}"]`);
 
-            return field?.value ?? field?.textContent ?? '';
+            const value = field?.value;
+
+            return value !== undefined && value !== ''
+                ? value
+                : field?.textContent?.trim() || '';
         },
 
         normalizePrice(value) {
@@ -618,6 +775,11 @@
 
     const Matcher = {
 
+        isStopped(item) {
+            return typeof item !== 'string' &&
+                /停止中/.test(item?.status || '');
+        },
+
         matches(title, id) {
             const text =
                 typeof title === 'string'
@@ -634,6 +796,7 @@
         find(products, id) {
             return (
                 products.find(product =>
+                    !this.isStopped(product) &&
                     this.matches(product, id)
                 ) || null
             );
@@ -652,9 +815,10 @@
                         ? item
                         : item?.title;
 
-                return !management.some(product =>
-                    this.matches(title, product.id)
-                );
+                return this.isStopped(item) ||
+                    !management.some(product =>
+                        this.matches(title, product.id)
+                    );
             });
         }
     };
@@ -1053,8 +1217,21 @@
 
     const Rakuma = {
 
+        getRecords() {
+            const records =
+                $$(CONFIG.selectors.rakuma.product);
+
+            if (records.length) {
+                return records;
+            }
+
+            return $$(
+                'a[href*="item.fril.jp"], a[href*="/item/"], a[href*="/items/"]'
+            );
+        },
+
         getProducts() {
-            return $$(CONFIG.selectors.rakuma.product)
+            return this.getRecords()
                 .map(record => {
                     const title =
                         $(
@@ -1062,7 +1239,13 @@
                             record
                         )
                             ?.textContent
-                            ?.trim() || '';
+                            ?.trim() ||
+                        record.querySelector(
+                            '[data-test*="item-name"], [data-testid*="item-name"], [class*="item-name"], [class*="itemName"], a[href*="item.fril.jp"], a[href*="/item/"], a[href*="/items/"]'
+                        )
+                            ?.textContent
+                            ?.trim() ||
+                        record.textContent?.trim() || '';
 
                     if (!title) {
                         return null;
@@ -1208,7 +1391,9 @@
                 visited.add(page);
 
                 const titles =
-                    this.getProducts();
+                    await Pagination.waitForProducts(
+                        () => this.getProducts()
+                    );
 
                 allTitles.push(...titles);
 
@@ -1328,6 +1513,15 @@
 
             const rakuma =
                 await this.loadAll();
+
+            if (!rakuma.length) {
+                await abortCheck(
+                    'ラクマの商品を取得できませんでした。\n\n' +
+                    'ラクマの出品中商品一覧が読み込まれているか確認してください。'
+                );
+
+                return;
+            }
 
             await setData(
                 CONFIG.storage.rakuma,
@@ -1657,7 +1851,7 @@
                 !rakuma.length
             ) {
                 await abortCheck(
-                    'チェック用データが不足しています。\n\n' +
+                    'チェック用データが不足しています（ラクマの商品データを含む）。\n\n' +
                     '最初から「出品チェック開始」を押してください。'
                 );
 
@@ -1799,11 +1993,10 @@
                 !management.length ||
                 !shops.length ||
                 !mercari.length ||
-                !rakuma.length ||
-                !yahoo.length
+                !rakuma.length
             ) {
                 await abortCheck(
-                    'チェック用データが不足しています。\n\n' +
+                    'チェック用データが不足しています（ラクマの商品データを含む）。\n\n' +
                     '最初から「出品チェック開始」を押してください。'
                 );
                 return;
@@ -1824,8 +2017,8 @@
             await clearPaginationState();
 
             Progress.update(
-                '商品を照合してCSVを作成中...',
-                100
+                '商品を照合して結果を作成中...',
+                90
             );
 
             const results =
@@ -1839,35 +2032,11 @@
                 );
 
             const unmatched = {
-                mercari:
-                    Matcher.getUnmatched(
-                        mercari,
-                        management
-                    ),
-
-                shops:
-                    Matcher.getUnmatched(
-                        shops,
-                        management
-                    ),
-
-                rakuma:
-                    Matcher.getUnmatched(
-                        rakuma,
-                        management
-                    ),
-
-                yahoo:
-                    Matcher.getUnmatched(
-                        yahoo,
-                        management
-                    ),
-
-                auctions:
-                    Matcher.getUnmatched(
-                        auctions,
-                        management
-                    )
+                mercari: Matcher.getUnmatched(mercari, management),
+                shops: Matcher.getUnmatched(shops, management),
+                rakuma: Matcher.getUnmatched(rakuma, management),
+                yahoo: Matcher.getUnmatched(yahoo, management),
+                auctions: Matcher.getUnmatched(auctions, management)
             };
 
             console.log(
@@ -1875,10 +2044,11 @@
                 results
             );
 
-            CSV.download(
-                results,
-                unmatched
-            );
+            const spreadsheetSaved =
+                await SpreadsheetSync.send(
+                    results,
+                    unmatched
+                );
 
             await clearCheckState();
             await sleep(500);
@@ -1894,7 +2064,11 @@
                 `対象商品：${results.length}件\n` +
                 `✅：${results.length - missing}件\n` +
                 `❌：${missing}件\n\n` +
-                'CSVをダウンロードしました。'
+                (
+                    spreadsheetSaved
+                        ? 'スプレッドシートに保存しました。'
+                        : 'スプレッドシートへの保存に失敗しました。'
+                )
             );
         }
     };
@@ -1984,221 +2158,81 @@
 
 
     // =========================================================
-    // CSV
+    // スプレッドシート用データ
     // =========================================================
 
-    const CSV = {
+    const ResultsOutput = {
 
-        mainColumns: [
-            '商品ID',
-            '商品名',
-            '出品漏れ\nチェック',
-            '出品日数',
-            '仕入参考価格',
-            '予想売値',
-            '手入力売値',
-            'メルカリShops\n価格\nいいね数\n閲覧数',
-            'メルカリ\n価格\nいいね数\n閲覧数',
-            'ラクマ\n価格\nいいね数\n閲覧数',
-            'ヤフーフリマ\n価格\nいいね数\n閲覧数',
-            'ヤフオク\n価格'
-        ],
+        buildLatestRows(results) {
+            const platforms = [
+                ['mercari_shops', 'shops'],
+                ['mercari', 'mercari'],
+                ['rakuma', 'rakuma'],
+                ['yahoo_fleamarket', 'yahoo'],
+                ['yahoo_auctions', 'auctions']
+            ];
+            const headers = [
+                'product_id',
+                'product_name',
+                'listing_check',
+                'listed_days',
+                'purchase_reference_price'
+            ];
 
-        unmatchedColumns: [
-            '種類',
-            '商品名',
-            '状態'
-        ],
+            platforms.forEach(([name]) => {
+                headers.push(name);
+            });
 
-        cell(value) {
-            return `"${String(value ?? '')
-                .replace(/"/g, '""')}"`;
+            return [
+                headers,
+                ...results.map(result => {
+                    const row = [
+                        result.id,
+                        result.name,
+                        result.result,
+                        result.listedDays || '',
+                        result.purchaseReferencePrice || ''
+                    ];
+
+                    platforms.forEach(([, key]) => {
+                        const product = result[key];
+
+                        row.push(product?.price || '❌');
+                    });
+
+                    return row;
+                })
+            ];
         },
 
-        platformStatus(product) {
-            if (!product) {
-                return '×';
-            }
-
-            if (typeof product === 'string') {
-                return '○';
-            }
-
-            if (product.price) {
-                return product.status === '公開停止中'
-                    ? `${product.price} / 公開停止中`
-                    : product.price;
-            }
-
-            return product.status === '公開停止中'
-                ? '○ 公開停止中'
-                : '○';
-        },
-
-        platformSummary(product, includeLikes = true, includeViews = true) {
-            if (!product) {
-                return '❌';
-            }
-
-            if (typeof product === 'string') {
-                return '○';
-            }
-
-            const lines = [];
-
-            if (product.price) {
-                lines.push(product.price);
-            } else if (product.status === '公開停止中') {
-                lines.push('○');
-            }
-
-            if (includeLikes && Number.isFinite(Number(product.likeCount))) {
-                lines.push(`👍${Number(product.likeCount)}`);
-            }
-
-            if (includeViews && Number.isFinite(Number(product.viewCount))) {
-                lines.push(`👀${Number(product.viewCount)}`);
-            }
-
-            if (product.status === '公開停止中' && !lines.includes('公開停止中')) {
-                lines.push('公開停止中');
-            }
-
-            return lines.length ? lines.join('\n') : '○';
-        },
-
-        download(results, unmatched) {
-            const rows = [];
-
-            const extraRows = [
-                ...unmatched.mercari.map(product => [
-                    'メルカリ',
-                    product.title,
-                    product.status
+        buildUnmatchedRows(unmatched) {
+            return [
+                ...unmatched.mercari.map(item => [
+                    'mercari',
+                    item.title || '',
+                    item.status || ''
                 ]),
-
                 ...unmatched.shops.map(item => [
-                    'メルカリShops',
+                    'mercari_shops',
                     typeof item === 'string' ? item : item?.title || '',
                     typeof item === 'string' ? '' : item?.price || ''
                 ]),
-
                 ...unmatched.rakuma.map(item => [
-                    'ラクマ',
+                    'rakuma',
                     typeof item === 'string' ? item : item?.title || '',
                     typeof item === 'string' ? '' : item?.price || ''
                 ]),
-
                 ...unmatched.yahoo.map(item => [
-                    'ヤフーフリマ',
+                    'yahoo_fleamarket',
                     typeof item === 'string' ? item : item?.title || '',
                     typeof item === 'string' ? '' : item?.status || ''
                 ]),
-
+                ...unmatched.auctions.map(item => [
+                    'yahoo_auctions',
+                    typeof item === 'string' ? item : item?.title || '',
+                    typeof item === 'string' ? '' : item?.price || ''
+                ])
             ];
-
-            const maxRows =
-                Math.max(
-                    results.length,
-                    extraRows.length
-                );
-
-            rows.push([
-                ...this.mainColumns,
-                '',
-                '管理表と紐づかなかった商品',
-                '',
-                ''
-            ]);
-
-            rows.push([
-                ...Array(this.mainColumns.length + 1).fill(''),
-                ...this.unmatchedColumns
-            ]);
-
-            for (let i = 0; i < maxRows; i++) {
-                const result =
-                    results[i];
-
-                const extra =
-                    extraRows[i];
-
-                rows.push([
-                    result?.id ?? '',
-                    result?.name ?? '',
-                    result?.result ?? '',
-                    result?.listedDays ?? '',
-                    result?.purchaseReferencePrice ?? '',
-                    result?.expectedSalePrice ?? '',
-                    result?.salePriceInput ?? '',
-
-                    this.platformSummary(result?.shops),
-                    this.platformSummary(result?.mercari),
-                    this.platformSummary(result?.rakuma),
-                    this.platformSummary(result?.yahoo),
-                    result
-                        ? result.auctions
-                            ? this.platformStatus(result.auctions)
-                            : '❌'
-                        : '',
-
-                    '',
-
-                    extra?.[0] ?? '',
-                    extra?.[1] ?? '',
-                    extra?.[2] ?? ''
-                ]);
-            }
-
-            const csv =
-                rows
-                    .map(row =>
-                        row.map(this.cell).join(',')
-                    )
-                    .join('\r\n');
-
-            const blob =
-                new Blob(
-                    ['\uFEFF' + csv],
-                    {
-                        type:
-                            'text/csv;charset=utf-8;'
-                    }
-                );
-
-            const url =
-                URL.createObjectURL(blob);
-
-            const link =
-                document.createElement('a');
-
-            const date =
-                new Date();
-
-            const timestamp =
-                date.getFullYear() +
-                String(
-                    date.getMonth() + 1
-                ).padStart(2, '0') +
-                String(
-                    date.getDate()
-                ).padStart(2, '0') +
-                '_' +
-                String(
-                    date.getHours()
-                ).padStart(2, '0') +
-                String(
-                    date.getMinutes()
-                ).padStart(2, '0');
-
-            link.href = url;
-
-            link.download =
-                `出品チェック結果_${timestamp}.csv`;
-
-            link.click();
-
-            URL.revokeObjectURL(url);
         }
     };
 
