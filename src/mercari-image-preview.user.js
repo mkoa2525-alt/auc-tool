@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         Mercari Fullscreen Image Preview
 // @namespace    https://github.com/mkoa2525-alt/auc-tool
-// @version      1.1.1
+// @version      1.1.2
 // @description  Mercariの商品編集画面の画像を拡大表示し、矢印キーで切り替える
 // @match        https://mercari-shops.com/seller/shops/*/products*
-// @match        https://jp.mercari.com/sell/draft/*
+// @match        https://jp.mercari.com/*
 // @grant        none
 // ==/UserScript==
 
@@ -171,6 +171,12 @@
 
     document.addEventListener('click', event => {
         if (!(event.target instanceof Element)) return;
+        if (
+            location.hostname === 'jp.mercari.com'
+            && !location.pathname.startsWith('/sell/draft/')
+        ) {
+            return;
+        }
 
         const image = getImageFromTarget(event.target);
         if (!image) return;
