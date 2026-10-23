@@ -1,10 +1,12 @@
 // ==UserScript==
 // @name         Mercari Fullscreen Image Preview
 // @namespace    https://github.com/mkoa2525-alt/auc-tool
-// @version      1.1.2
-// @description  Mercariの商品編集画面の画像を拡大表示し、矢印キーで切り替える
+// @version      1.1.3
+// @description  Mercariの商品編集画面の画像を拡大表示し、キーとホイールで切り替える
 // @match        https://mercari-shops.com/seller/shops/*/products*
 // @match        https://jp.mercari.com/*
+// @updateURL    https://github.com/mkoa2525-alt/auc-tool/raw/refs/heads/main/src/mercari-image-preview.user.js
+// @downloadURL  https://github.com/mkoa2525-alt/auc-tool/raw/refs/heads/main/src/mercari-image-preview.user.js
 // @grant        none
 // ==/UserScript==
 
@@ -150,6 +152,12 @@
         overlay.addEventListener('click', event => {
             if (event.target === overlay) closePreview();
         });
+        overlay.addEventListener('wheel', event => {
+            if (event.deltaY === 0) return;
+
+            event.preventDefault();
+            showImage(activeIndex + (event.deltaY > 0 ? 1 : -1));
+        }, { passive: false });
         document.body.append(overlay);
         document.body.style.overflow = 'hidden';
 
