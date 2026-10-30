@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         商品管理表 ⇔ メルカリShops ⇔ メルカリ ⇔ ラクマ ⇔ ヤフーフリマ ⇔ ヤフオク 出品チェック
 // @namespace    https://sustre-product-sales.vercel.app/products
-// @version      16.0.0
+// @version      16.7.0
 // @description  商品管理表・メルカリShops・メルカリ・ラクマ・ヤフーフリマ・ヤフオクの出品状況をチェックしてスプレッドシートへ保存
 // @match        https://sustre-product-sales.vercel.app/*
 // @match        https://mercari-shops.com/seller/shops/*/products*
@@ -50,7 +50,7 @@
         },
 
         urls: {
-            spreadsheetWebhook: 'https://script.google.com/macros/s/AKfycbzE6IjG6o_dYDdlczvM5nS79dvmML0YEZ771_Ec-v6vUo3tEpKilXDE2PjBk-Cj5ft7Yw/exec',
+            spreadsheetWebhook: 'https://script.google.com/macros/s/AKfycbzo0Uarcepw_JjVUoomWUg9HGX7-zD1FsyIEAposUA3UZnmZb7O2jhWr6fgWfs-V2VCCA/exec',
             spreadsheetWebhookToken: 'CHANGE_ME_TO_A_RANDOM_TOKEN',
 
             shops:
@@ -78,7 +78,10 @@
                 listedDays: '[data-product-output-field="listed_days"]',
                 purchaseReferencePrice: 'input[name$=":purchase_reference_price"]',
                 expectedSalePrice: 'input[name$=":expected_sale_price"]',
-                salePriceInput: 'input[name$=":sale_price_input"]'
+                salePriceInput: 'input[name$=":sale_price_input"]',
+                pagination: 'nav[aria-label="商品一覧のページ"]',
+                currentPage: 'button[aria-current="page"]',
+                nextPage: 'button[aria-label="次のページ"]'
             },
 
             shops: {
@@ -111,8 +114,8 @@
             },
 
             auctions: {
-                product: 'li.sc-c49ee79a-0.yutKe',
-                name: 'a.sc-12236b48-0.iDOKqO',
+                product: 'li:has(a[href*="/jp/auction/"])',
+                name: 'a[href*="/jp/auction/"]',
                 pagination: '#pagination'
             }
         },
@@ -121,7 +124,8 @@
             normal: 15000,
             mercariLoadMore: 60000,
             mercariPageChange: 10000,
-            pageChange: 15000
+            pageChange: 15000,
+            managementPageChange: 15000
         }
     };
 
@@ -691,19 +695,23 @@
             return `${Number(digits)}日`;
         },
 
-        getProducts() {
-            return $$(CONFIG.selectors.management.row)
-                .filter(row => {
-                    const status =
-                        $(
-                            CONFIG.selectors.management.status,
-                            row
-                        )
-                            ?.selectedOptions?.[0]
-                            ?.textContent
-                            ?.trim();
+        getStatus(row) {
+            return $(
+                CONFIG.selectors.management.status,
+                row
+            )
+                ?.selectedOptions?.[0]
+                ?.textContent
+                ?.trim() || '';
+        },
 
-                    return status === '出品中';
+        getProducts(rows = $$(CONFIG.selectors.management.row)) {
+            return rows
+                .filter(row => {
+                    return [
+                        '出品中',
+                        '委託出品中'
+                    ].includes(this.getStatus(row));
                 })
                 .map(row => ({
                     id:
@@ -721,6 +729,11 @@
                         )
                             ?.value
                             ?.trim() || '',
+
+                    listingType:
+                        this.getStatus(row) === '委託出品中'
+                            ? '委託'
+                            : '自社',
 
                     listedDays:
                         this.formatListedDays(
@@ -765,6 +778,80 @@
                         )
                 }))
                 .filter(product => product.id);
+        },
+
+        getPageState() {
+            const pagination = $(
+                CONFIG.selectors.management.pagination
+            );
+            const nextButton = $(
+                CONFIG.selectors.management.nextPage,
+                pagination || document
+            );
+            const currentPageButton = $(
+                CONFIG.selectors.management.currentPage,
+                pagination || document
+            );
+            const currentPageMatch = currentPageButton
+                ?.getAttribute('aria-label')
+                ?.match(/(\d+)\s*ページ/);
+            const pageNumbers = pagination
+                ? $$('button[aria-label]', pagination)
+                    .map(button =>
+                        Number(button.getAttribute('aria-label')?.match(/^(\d+)ページ$/)?.[1])
+                    )
+                    .filter(Number.isFinite)
+                : [];
+
+            return {
+                currentPage:
+                    Number(currentPageMatch?.[1]) ||
+                    1,
+                totalPages:
+                    Math.max(...pageNumbers, 0) ||
+                    1,
+            };
+        },
+
+        async loadAllProducts(onPageChange) {
+            const productsById = new Map();
+
+            while (true) {
+                const rows = $$(CONFIG.selectors.management.row);
+
+                this.getProducts(rows).forEach(product => {
+                    productsById.set(product.id, product);
+                });
+
+                const nextButton = $(
+                    CONFIG.selectors.management.nextPage,
+                    $(CONFIG.selectors.management.pagination) || document
+                );
+
+                if (!nextButton || nextButton.disabled) {
+                    break;
+                }
+
+                const previousState = this.getPageState();
+                onPageChange?.(previousState);
+                nextButton.click();
+
+                const changed = await waitFor(() => {
+                    const currentState = this.getPageState();
+
+                    return currentState.currentPage !== previousState.currentPage;
+                }, CONFIG.timeout.managementPageChange, 300);
+
+                if (!changed) {
+                    throw new Error(
+                        '管理表のページが切り替わりませんでした。ページ表示を確認して、もう一度お試しください。'
+                    );
+                }
+
+                await sleep(300);
+            }
+
+            return [...productsById.values()];
         }
     };
 
@@ -1904,32 +1991,31 @@
 
     const Auctions = {
 
+        getPrice(record, label) {
+            const labelNode = [...record.querySelectorAll('span')]
+                .find(node => node.textContent?.trim() === label);
+            const priceNode = labelNode
+                ?.closest('li')
+                ?.querySelectorAll('span');
+
+            return [...(priceNode || [])]
+                .map(node => node.textContent?.trim() || '')
+                .find(text => /^\d[\d,]*円$/.test(text)) || '';
+        },
+
         getProducts() {
             return $$(CONFIG.selectors.auctions.product)
                 .map(record => {
-                    const title =
-                        $(
-                            CONFIG.selectors.auctions.name,
-                            record
-                        )
-                            ?.textContent
-                            ?.trim() || '';
+                    const title = $$(CONFIG.selectors.auctions.name, record)
+                        .map(link => link.textContent?.trim() || '')
+                        .find(Boolean) || '';
 
                     if (!title) {
                         return null;
                     }
 
-                    const currentPrice =
-                        record.querySelector('.sc-98b8db6c-2')
-                            ?.textContent
-                            ?.replace(/\s+/g, '')
-                            ?.trim() || '';
-
-                    const buyNowPrice =
-                        record.querySelector('.sc-98b8db6c-3')
-                            ?.textContent
-                            ?.replace(/\s+/g, '')
-                            ?.trim() || '';
+                    const currentPrice = this.getPrice(record, '現在');
+                    const buyNowPrice = this.getPrice(record, '即決');
 
                     const price =
                         currentPrice && buyNowPrice
@@ -2133,10 +2219,24 @@
                     rakumaOk &&
                     Boolean(yahooProduct) &&
                     auctionsOk;
+                const hasAnyMarketplacePrice = [
+                    shopsProduct,
+                    mercariProduct,
+                    rakumaProduct,
+                    yahooProduct,
+                    auctionsProduct
+                ].some(marketplaceProduct =>
+                    String(marketplaceProduct?.price || '').trim() !== ''
+                );
+                const listingCheck =
+                    product.listingType === '委託'
+                        ? !hasAnyMarketplacePrice
+                        : ok;
 
                 return {
                     id: product.id,
                     name: product.name,
+                    listingType: product.listingType || '自社',
                     listedDays: product.listedDays || '',
                     purchaseReferencePrice: product.purchaseReferencePrice || '',
                     expectedSalePrice: product.expectedSalePrice || '',
@@ -2148,7 +2248,7 @@
                     yahoo: yahooProduct,
                     auctions: auctionsProduct,
                     result:
-                        ok
+                        listingCheck
                             ? '✅'
                             : '❌'
                 };
@@ -2174,6 +2274,7 @@
             const headers = [
                 'product_id',
                 'product_name',
+                'listing_type',
                 'listing_check',
                 'listed_days',
                 'purchase_reference_price'
@@ -2189,6 +2290,7 @@
                     const row = [
                         result.id,
                         result.name,
+                        result.listingType,
                         result.result,
                         result.listedDays || '',
                         result.purchaseReferencePrice || ''
@@ -2197,7 +2299,7 @@
                     platforms.forEach(([, key]) => {
                         const product = result[key];
 
-                        row.push(product?.price || '❌');
+                        row.push(product?.price || '');
                     });
 
                     return row;
@@ -2242,8 +2344,27 @@
     // =========================================================
 
     async function startCheck() {
-        const products =
-            Management.getProducts();
+        const button = document.getElementById('management-check-button');
+        const buttonText = button?.textContent;
+        let products;
+
+        if (button) {
+            button.disabled = true;
+        }
+
+        try {
+            products = await Management.loadAllProducts(page => {
+                if (button) {
+                    button.textContent =
+                        `管理表を取得中... ${page.currentPage}/${page.totalPages}ページ`;
+                }
+            });
+        } finally {
+            if (button) {
+                button.disabled = false;
+                button.textContent = buttonText;
+            }
+        }
 
         if (!products.length) {
             alert(
@@ -2370,6 +2491,7 @@
 
             alert(
                 '出品チェック中にエラーが発生しました。\n\n' +
+                `${error.message}\n\n` +
                 '最初から「出品チェック開始」を押してください。'
             );
         }

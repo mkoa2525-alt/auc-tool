@@ -4,6 +4,17 @@ const OVERVIEW_SHEET_NAME = 'overview';
 const LATEST_RESULTS_SHEET_NAME = 'check_results_latest';
 const UNMATCHED_SHEET_NAME = 'unmatched_products';
 const PLATFORMS = ['メルカリShops', 'メルカリ', 'ラクマ', 'ヤフーフリマ', 'ヤフオク'];
+const MARKETPLACE_PRICE_HEADERS = [
+  'mercari_shops',
+  'mercari',
+  'rakuma',
+  'yahoo_fleamarket',
+  'yahoo_auctions'
+];
+const LISTING_TYPE_COLORS = {
+  '自社': '#eaf3f8',
+  '委託': '#fff0e1'
+};
 const METRICS_HEADERS = [
   'captured_date',
   'product_id',
@@ -65,6 +76,20 @@ function writeLatestResults_(rows) {
   const sheet = getSheet_(LATEST_RESULTS_SHEET_NAME);
   const columnCount = getColumnCount_(rows);
   const normalizedRows = normalizeRows_(rows);
+  const headers = normalizedRows[0];
+  const listingTypeIndex = headers.indexOf('listing_type');
+  const priceIndexes = MARKETPLACE_PRICE_HEADERS
+    .map(header => headers.indexOf(header))
+    .filter(index => index >= 0);
+  const listingCheckIndex = headers.indexOf('listing_check');
+
+  if (listingCheckIndex >= 0 && priceIndexes.length > 1) {
+    normalizedRows.slice(1).forEach(row => {
+      if (hasPriceDifference_(row, priceIndexes)) {
+        row[listingCheckIndex] = '⚠️';
+      }
+    });
+  }
 
   sheet.clear();
   sheet
@@ -79,27 +104,23 @@ function writeLatestResults_(rows) {
     body.setHorizontalAlignment('left');
     sheet.getRange(2, 1, rows.length - 1, 1)
       .setHorizontalAlignment('right');
-    sheet.getRange(2, 4, rows.length - 1, 1)
-      .setHorizontalAlignment('right');
     sheet.getRange(2, 5, rows.length - 1, 1)
       .setHorizontalAlignment('right');
-    if (columnCount > 5) {
-      sheet.getRange(2, 6, rows.length - 1, columnCount - 5)
+    sheet.getRange(2, 6, rows.length - 1, 1)
+      .setHorizontalAlignment('right');
+    sheet.getRange(2, 4, rows.length - 1, 1)
+      .setHorizontalAlignment('center');
+    if (columnCount > 6) {
+      sheet.getRange(2, 7, rows.length - 1, columnCount - 6)
         .setHorizontalAlignment('right');
     }
-    sheet.getRange(2, 3, rows.length - 1, 1)
-      .setHorizontalAlignment('center');
 
     body.setBackgrounds(
-      normalizedRows
-        .slice(1)
-        .map(row => {
-          const color = hasPriceDifference_(row)
-            ? '#fff2cc'
-            : '#ffffff';
+      normalizedRows.slice(1).map(row => {
+        const color = LISTING_TYPE_COLORS[row[listingTypeIndex]] || '#ffffff';
 
-          return Array(columnCount).fill(color);
-        })
+        return Array(columnCount).fill(color);
+      })
     );
 
     normalizedRows
@@ -117,11 +138,12 @@ function writeLatestResults_(rows) {
   sheet.setFrozenRows(1);
 }
 
-function hasPriceDifference_(row) {
-  const prices = row
-    .slice(5)
+function hasPriceDifference_(row, priceIndexes) {
+  const prices = priceIndexes
+    .map(index => row[index])
+    .filter(value => value !== '' && value !== null && value !== '❌')
     .map(value => {
-      const match = String(value || '').match(/\d[\d,]*/);
+      const match = String(value).match(/\d[\d,]*/);
 
       return match
         ? Number(match[0].replace(/,/g, ''))
