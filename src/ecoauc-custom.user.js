@@ -1,10 +1,22 @@
-    javascript:(async function() {
+// ==UserScript==
+// @name         EcoAuc 商品詳細カスタマイズ
+// @namespace    https://github.com/mkoa2525-alt/auc-tool
+// @version      1.3.0
+// @description  EcoAucの商品一覧に画像プレビュー、説明文チェック、メモ機能を追加
+// @match        https://www.ecoauc.com/*
+// @updateURL    https://github.com/mkoa2525-alt/auc-tool/raw/refs/heads/main/src/ecoauc-custom.user.js
+// @downloadURL  https://github.com/mkoa2525-alt/auc-tool/raw/refs/heads/main/src/ecoauc-custom.user.js
+// @run-at       document-idle
+// @grant        none
+// ==/UserScript==
+
+(async function() {
         // 設定値まとめ
         const CONFIG = {
             LINK_SELECTOR: 'a[href*="/auction-items/view/"]',
             MAX_RETRY: 5,
-            MIN_DELAY: 3000,
-            MAX_DELAY: 5000,
+            MIN_DELAY: 500,
+            MAX_DELAY: 1000,
             IMAGE_HEIGHT: 250,
             WARN_WORDS: ["確認できず", "不鮮明", "未確認", "剥がれ", "臭", "ニオイ", "におい", "破損", "ホック", "ボタン", "リカラー", "欠損", "出来ず"]
         };
@@ -144,7 +156,10 @@
         const imgs = Array.isArray(sources) ? sources.slice() : [sources];
         let idx = startIndex;
         // preload all
-        imgs.forEach(s => { const i=new Image(); i.src=s; });
+        imgs.forEach(src => {
+            const image = new Image();
+            image.src = src;
+        });
         const overlay = createStyledElement("div", {
             position: "fixed",
             inset: 0,
@@ -213,18 +228,17 @@
                 boxShadow: "0 2px 6px rgba(0,0,0,0.2)"
             });
             let retry = 0;
-            function reloadImage(url) {
-                img.src = url;
-            }
             img.onerror = function() {
                 if (retry < 3) {
                     retry++;
-                    setTimeout(() => reloadImage(src), 800 * retry);
+                    setTimeout(() => {
+                        img.src = src;
+                    }, 800 * retry);
                 } else {
                     img.style.opacity = "0.3";
                 }
             };
-            reloadImage(src);
+            img.src = src;
             img.onclick = () => document.body.appendChild(createImageViewer(thumbnails, i));
             container.appendChild(img);
         });
@@ -232,113 +246,154 @@
     }
 
     // 事前入札アラート拡張
-    (function() {
-        const origAjax = $.ajax;
-        $.ajax = function(opt) {
-            if (opt 
-                && opt.url 
-                && (opt.url.includes("/client/pre-bids/add") || opt.url.includes("/client/pre-bids/remove") || opt.url.includes("/client/timelimit-auctions/bid"))) {
-                const origSuccess = opt.success;
-                opt.success = function(res) {
-                    if (res && res.success) {
+    function installBidAlert() {
+        const ajax = window.jQuery?.ajax;
+
+        if (typeof ajax !== "function") return;
+
+        window.jQuery.ajax = function(opt) {
+            const shouldSuppressAlert =
+                opt?.url &&
+                [
+                    "/client/pre-bids/add",
+                    "/client/pre-bids/remove",
+                    "/client/timelimit-auctions/bid"
+                ].some(path => opt.url.includes(path));
+
+            if (shouldSuppressAlert) {
+                const originalSuccess = opt.success;
+                opt.success = function(response) {
+                    if (response?.success) {
                         console.log("事前入札を保存しました");
                         return;
                     }
-                    if (origSuccess) origSuccess.apply(this, arguments);
+
+                    originalSuccess?.apply(this, arguments);
                 };
             }
-            return origAjax.apply(this, arguments);
+
+            return ajax.apply(this, arguments);
         };
-    })();
+    }
 
     // シングルカラムスタイル適用
-    (function() {
-        if (!document.getElementById("ecoauc-single-column-style")) {
-            const style = document.createElement("style");
-            style.id = "ecoauc-single-column-style";
-            style.innerHTML = `.item-grid-table-wrap .mb-grid-card{flex:0 0 100% !important;max-width:100% !important;width:100% !important;}.item-grid-table-wrap .row{display:flex !important;flex-direction:column !important;}`;
-            document.head.appendChild(style);
-        }
-    })();
+    function installSingleColumnStyle() {
+        if (document.getElementById("ecoauc-single-column-style")) return;
+
+        const style = document.createElement("style");
+        style.id = "ecoauc-single-column-style";
+        style.textContent =
+            ".item-grid-table-wrap .mb-grid-card{" +
+            "flex:0 0 100% !important;max-width:100% !important;width:100% !important;" +
+            "}.item-grid-table-wrap .row{" +
+            "display:flex !important;flex-direction:column !important;}";
+        document.head.appendChild(style);
+    }
 
     // 商品リンク抽出
     function extractItemLinks() {
-        const ids = [...new Set([...document.querySelectorAll(CONFIG.LINK_SELECTOR)].map(el => el.href.match(/\/view\/(\d+)\//)?.[1]).filter(Boolean))];
+        const links = [...document.querySelectorAll(CONFIG.LINK_SELECTOR)];
+        links.forEach(link => {
+            link.target = "_blank";
+            link.relList.add("noopener");
+        });
+
+        const ids = [...new Set(
+            links
+                .map(link => link.href.match(/\/view\/(\d+)\//)?.[1])
+                .filter(Boolean)
+        )];
+
         return ids.map(id => ({
             id,
             url: `${location.origin}/client/auction-items/view/${id}/Auctions/inspect`
         }));
     }
 
-    // メイン処理
-    const itemLinks = extractItemLinks();
-    const cache = {};
-    function randomDelay() {
-        return Math.floor(Math.random() * (CONFIG.MAX_DELAY - CONFIG.MIN_DELAY)) + CONFIG.MIN_DELAY;
+    function renderItemDetails({ id }, html) {
+        const link = document.querySelector(
+            `.mb-grid-card a[href*="/view/${id}/"]`
+        );
+        const card = link?.closest(".mb-grid-card");
+
+        if (!card || card.querySelector(".ecoauc-inline")) return;
+
+        const { thumbnails, description, name } = parseItemHtml(html);
+        const info = createStyledElement("div", {
+            borderTop: "1px solid #ddd",
+            padding: "12px 8px",
+            marginTop: "6px",
+            fontSize: "13px",
+            background: "#fafafa",
+            borderRadius: "6px"
+        });
+        info.className = "ecoauc-inline";
+        info.appendChild(createThumbnails(thumbnails));
+
+        let descriptionHtml = description;
+        let hasWarning = false;
+        CONFIG.WARN_WORDS.forEach(word => {
+            const matcher = new RegExp(word, "g");
+            hasWarning ||= matcher.test(description);
+            descriptionHtml = descriptionHtml.replace(
+                matcher,
+                `<span style="background:linear-gradient(transparent 60%,#ffeb3b 60%);color:#c62828;font-weight:700;">${word}</span>`
+            );
+        });
+
+        const descriptionElement = createStyledElement("div", {
+            whiteSpace: "pre-wrap",
+            margin: "0",
+            fontFamily: "inherit"
+        });
+        descriptionElement.innerHTML = name
+            ? `<b style='font-size:15px;'>${name}</b> ${descriptionHtml}`
+            : descriptionHtml;
+
+        if (hasWarning) {
+            info.style.background = "#fff3e0";
+            info.style.border = "2px solid #ff9800";
+        }
+
+        info.appendChild(descriptionElement);
+        const { input, button } = createMemoControls(id);
+        info.append(input, button);
+        card.appendChild(info);
     }
-    if (itemLinks.length) {
+
+    async function loadItemDetails(itemLinks) {
         const progress = createProgressBar(itemLinks.length);
+
         for (const item of itemLinks) {
-            if (cache[item.url]) {
-                progress.tick();
-                continue;
-            }
             try {
-                const delay = randomDelay();
+                const delay = Math.floor(
+                    Math.random() * (CONFIG.MAX_DELAY - CONFIG.MIN_DELAY)
+                ) + CONFIG.MIN_DELAY;
                 progress.wait(delay / 1000);
                 await sleep(delay);
-                cache[item.url] = await fetchWithRetry(item.url);
-            } catch {}
+                renderItemDetails(item, await fetchWithRetry(item.url));
+            } catch (error) {
+                console.warn(`商品情報を取得できませんでした: ${item.id}`, error);
+            }
+
             progress.tick();
         }
-        progress.done();
-        // 画像エリア非表示
-        document.querySelectorAll(".item-image.item-image-min.pc-image-area").forEach(el => el.style.display = "none");
-        // 商品情報インライン表示
-        itemLinks.forEach(({ id, url }) => {
-            const html = cache[url];
-            if (!html) return;
-            const linkEl = document.querySelector(`.mb-grid-card a[href*="/view/${id}/"]`);
-            if (!linkEl) return;
-            const card = linkEl.closest(".mb-grid-card");
-            if (!card || card.querySelector(".ecoauc-inline")) return;
-            const { thumbnails, description, name } = parseItemHtml(html);
-            const infoDiv = createStyledElement("div", {
-                borderTop: "1px solid #ddd",
-                padding: "12px 8px",
-                marginTop: "6px",
-                fontSize: "13px",
-                background: "#fafafa",
-                borderRadius: "6px"
-            });
-            infoDiv.className = "ecoauc-inline";
-            infoDiv.appendChild(createThumbnails(thumbnails));
-            // 商品名と説明はそのまま
-            let descHtml = description;
-            let warn = false;
-            CONFIG.WARN_WORDS.forEach(word => {
-                const reg = new RegExp(word, "g");
-                if (reg.test(description)) warn = true;
-                descHtml = descHtml.replace(reg, `<span style="background:linear-gradient(transparent 60%,#ffeb3b 60%);color:#c62828;font-weight:700;">${word}</span>`);
-            });
-            const descDiv = createStyledElement("div", {
-                whiteSpace: "pre-wrap",
-                margin: "0",
-                fontFamily: "inherit"
-            });
-            descDiv.innerHTML = name ? `<b style='font-size:15px;'>${name}</b> ${descHtml}` : descHtml;
-            if (warn) {
-                infoDiv.style.background = "#fff3e0";
-                infoDiv.style.border = "2px solid #ff9800";
-            }
-            infoDiv.appendChild(descDiv);
 
-            // メモ入力欄と保存ボタンをヘルパーで作成
-            const { input: memoInput, button: memoBtn } = createMemoControls(id);
-            infoDiv.appendChild(memoInput);
-            infoDiv.appendChild(memoBtn);
-            card.appendChild(infoDiv);
+        progress.done();
+    }
+
+    // メイン処理
+    installBidAlert();
+    installSingleColumnStyle();
+    const itemLinks = extractItemLinks();
+
+    if (itemLinks.length) {
+        document.querySelectorAll(
+            ".item-image.item-image-min.pc-image-area"
+        ).forEach(element => {
+            element.style.display = "none";
         });
+        await loadItemDetails(itemLinks);
     } else {
         alert("対象商品なし");
     }
