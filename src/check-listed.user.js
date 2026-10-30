@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         商品管理表 ⇔ メルカリShops ⇔ メルカリ ⇔ ラクマ ⇔ ヤフーフリマ ⇔ ヤフオク 出品チェック
 // @namespace    https://sustre-product-sales.vercel.app/products
-// @version      16.7.0
+// @version      16.15.0
 // @description  商品管理表・メルカリShops・メルカリ・ラクマ・ヤフーフリマ・ヤフオクの出品状況をチェックしてスプレッドシートへ保存
 // @match        https://sustre-product-sales.vercel.app/*
 // @match        https://mercari-shops.com/seller/shops/*/products*
@@ -50,7 +50,7 @@
         },
 
         urls: {
-            spreadsheetWebhook: 'https://script.google.com/macros/s/AKfycbzo0Uarcepw_JjVUoomWUg9HGX7-zD1FsyIEAposUA3UZnmZb7O2jhWr6fgWfs-V2VCCA/exec',
+            spreadsheetWebhook: 'https://script.google.com/macros/s/AKfycbxzgCJoW1VQplgSCnuPu5OGxG1ch6NV1-AoxAJyYKgWAQg5UEatG25BxTLN9EjTGlnq7A/exec',
             spreadsheetWebhookToken: 'CHANGE_ME_TO_A_RANDOM_TOKEN',
 
             shops:
@@ -131,59 +131,6 @@
 
     const SpreadsheetSync = {
 
-        dateString(date = new Date()) {
-            return [
-                date.getFullYear(),
-                String(date.getMonth() + 1).padStart(2, '0'),
-                String(date.getDate()).padStart(2, '0')
-            ].join('-');
-        },
-
-        dateTimeString(date = new Date()) {
-            return `${this.dateString(date)} ${String(date.getHours()).padStart(2, '0')}:` +
-                `${String(date.getMinutes()).padStart(2, '0')}:` +
-                `${String(date.getSeconds()).padStart(2, '0')}`;
-        },
-
-        metricsRows(results, capturedAt = new Date()) {
-            const capturedDate = this.dateTimeString(capturedAt);
-            const platforms = [
-                ['メルカリShops', 'shops'],
-                ['メルカリ', 'mercari'],
-                ['ラクマ', 'rakuma'],
-                ['ヤフーフリマ', 'yahoo'],
-                ['ヤフオク', 'auctions']
-            ];
-
-            return results.flatMap(result =>
-                platforms.map(([platform, key]) => {
-                    const product = result[key];
-
-                    if (!product) {
-                        return null;
-                    }
-
-                    return {
-                        capturedDate,
-                        productId: result.id,
-                        productName: result.name,
-                        platform,
-                        listedDays: result.listedDays || '',
-                        price: product?.price || '',
-                        likeCount: product?.likeCount ?? '',
-                        viewCount: product?.viewCount ?? ''
-                    };
-                }).filter(Boolean)
-            );
-        },
-
-        activeProducts(results) {
-            return results.map(result => ({
-                productId: result.id,
-                productName: result.name
-            }));
-        },
-
         request(url, payload) {
             return new Promise((resolve, reject) => {
                 if (
@@ -238,24 +185,20 @@
             }
 
             try {
-                const capturedAt = new Date();
                 const latestRows = ResultsOutput.buildLatestRows(results);
-                const metricsRows = this.metricsRows(results, capturedAt);
-                const activeProducts = this.activeProducts(results);
+                const latestLinks = ResultsOutput.buildLatestLinks(results);
                 const unmatchedRows = ResultsOutput.buildUnmatchedRows(unmatched);
 
                 Progress.update(
-                    `スプレッドシートへ送信中...（${results.length}商品・履歴${metricsRows.length}件）`,
+                    `スプレッドシートへ送信中...（${results.length}商品）`,
                     96
                 );
 
                 await this.request(url, {
                     source: 'auc-tool',
                     token: CONFIG.urls.spreadsheetWebhookToken,
-                    sentAt: capturedAt.toISOString(),
                     latestRows,
-                    metricsRows,
-                    activeProducts,
+                    latestLinks,
                     unmatchedRows
                 });
 
@@ -263,7 +206,7 @@
                     'スプレッドシートへの保存が完了しました。',
                     100
                 );
-                console.log('[スプレッドシート] 日次データを送信しました');
+                console.log('[スプレッドシート] チェック結果を送信しました');
                 return true;
             } catch (error) {
                 console.error('[スプレッドシート] 送信失敗:', error);
@@ -671,14 +614,6 @@
                 : field?.textContent?.trim() || '';
         },
 
-        normalizePrice(value) {
-            return Price.normalize(value);
-        },
-
-        formatPriceNumber(value) {
-            return Price.formatNumber(value);
-        },
-
         formatListedDays(value) {
             const raw = String(value ?? '').trim();
 
@@ -745,8 +680,8 @@
                         ),
 
                     purchaseReferencePrice:
-                        this.formatPriceNumber(
-                            this.normalizePrice(
+                        Price.formatNumber(
+                            Price.normalize(
                                 this.readInputValue(
                                     row,
                                     CONFIG.selectors.management.purchaseReferencePrice,
@@ -756,8 +691,8 @@
                         ),
 
                     expectedSalePrice:
-                        this.formatPriceNumber(
-                            this.normalizePrice(
+                        Price.formatNumber(
+                            Price.normalize(
                                 this.readInputValue(
                                     row,
                                     CONFIG.selectors.management.expectedSalePrice,
@@ -767,8 +702,8 @@
                         ),
 
                     salePriceInput:
-                        this.formatPriceNumber(
-                            this.normalizePrice(
+                        Price.formatNumber(
+                            Price.normalize(
                                 this.readInputValue(
                                     row,
                                     CONFIG.selectors.management.salePriceInput,
@@ -948,7 +883,7 @@
                             ?.trim() || '';
 
                     const price =
-                        Management.formatPriceNumber(
+                        Price.formatNumber(
                             record.querySelector('.css-1wgdpkr')
                                 ?.textContent
                                 ?.trim() ||
@@ -969,7 +904,12 @@
                         : { likeCount: 0, viewCount: 0 };
 
                     return title
-                        ? { title, price, ...counts }
+                        ? {
+                            title,
+                            price,
+                            url: record.querySelector('a[href]')?.href || '',
+                            ...counts
+                        }
                         : null;
                 })
                 .filter(Boolean);
@@ -1098,43 +1038,60 @@
             );
         },
 
+        getPrice(record) {
+            const selectedPrice =
+                record.querySelector('[data-testid="price"]')
+                    ?.textContent
+                    ?.trim() ||
+                record.querySelector('.css-1wgdpkr')
+                    ?.textContent
+                    ?.trim() ||
+                record.querySelector('.deal-item__price')
+                    ?.textContent
+                    ?.trim() ||
+                record.querySelector('.sc-9dbc04ce-0.kXaiYU')
+                    ?.textContent
+                    ?.trim();
+
+            if (selectedPrice) {
+                return Price.formatNumber(selectedPrice);
+            }
+
+            const priceText = [...record.querySelectorAll('span, p, div')]
+                .map(node => node.textContent?.trim().replace(/\s+/g, '') || '')
+                .filter(text =>
+                    /^(?:[¥￥][\d,]+円?|[\d,]+円)$/.test(text)
+                )
+                .sort((left, right) => left.length - right.length)[0] || '';
+
+            return Price.formatNumber(priceText);
+        },
+
         getProducts() {
             return this.getRecords()
                 .map(record => {
-                    const title =
-                        $(
-                            CONFIG.selectors.mercari.name,
-                            record
-                        )
-                            ?.textContent
-                            ?.trim() || '';
+                    const titleNode = $(
+                        CONFIG.selectors.mercari.name,
+                        record
+                    );
+                    const title = titleNode?.textContent?.trim() || '';
 
                     if (!title) {
                         return null;
                     }
 
-                    const price =
-                        Management.formatPriceNumber(
-                            record.querySelector('[data-testid="price"]')
-                                ?.textContent
-                                ?.trim() ||
-                            record.querySelector('.css-1wgdpkr')
-                                ?.textContent
-                                ?.trim() ||
-                            record.querySelector('.deal-item__price')
-                                ?.textContent
-                                ?.trim() ||
-                            record.querySelector('.sc-9dbc04ce-0.kXaiYU')
-                                ?.textContent
-                                ?.trim() ||
-                            ''
-                        );
+                    const price = this.getPrice(record);
+                    const itemLink = record.matches('a[href*="/item/"]')
+                        ? record
+                        : record.querySelector('a[href*="/item/"]') ||
+                            titleNode?.closest('a[href*="/item/"]');
 
                     const counts = Stats.extract(record);
 
                     return {
                         title,
                         price,
+                        url: itemLink?.href || '',
                         ...counts,
                         status:
                             record.textContent
@@ -1356,7 +1313,7 @@
                         '';
 
                     const price =
-                        Management.formatPriceNumber(
+                        Price.formatNumber(
                             record.querySelector('.deal-item__price')
                                 ?.textContent
                                 ?.trim() ||
@@ -1378,6 +1335,9 @@
                     return {
                         title,
                         price,
+                        url: record.querySelector(
+                            'a[href*="item.fril.jp"], a[href*="/item/"], a[href*="/items/"]'
+                        )?.href || '',
                         ...counts,
                         status: '公開中'
                     };
@@ -1863,7 +1823,7 @@
                         text.includes('停止中');
 
                     const price =
-                        Management.formatPriceNumber(
+                        Price.formatNumber(
                             record.querySelector('.sc-9dbc04ce-0.kXaiYU')
                                 ?.textContent
                                 ?.trim() ||
@@ -1882,6 +1842,7 @@
                     return {
                         title,
                         price,
+                        url: record.href || '',
                         ...counts,
                         status:
                             stopped
@@ -2019,14 +1980,17 @@
 
                     const price =
                         currentPrice && buyNowPrice
-                            ? `${Management.formatPriceNumber(currentPrice)}（即決${Management.formatPriceNumber(buyNowPrice)}）`
-                            : Management.formatPriceNumber(currentPrice || buyNowPrice || '');
+                            ? `${Price.formatNumber(currentPrice)}（即決${Price.formatNumber(buyNowPrice)}）`
+                            : Price.formatNumber(currentPrice || buyNowPrice || '');
 
                     const counts = Stats.extract(record);
 
                     return {
                         title,
                         price,
+                        url: $$(CONFIG.selectors.auctions.name, record)
+                            .map(link => link.href || '')
+                            .find(Boolean) || '',
                         ...counts,
                         status: '公開中'
                     };
@@ -2272,16 +2236,23 @@
                 ['yahoo_auctions', 'auctions']
             ];
             const headers = [
-                'product_id',
+                'id',
                 'product_name',
                 'listing_type',
                 'listing_check',
                 'listed_days',
                 'purchase_reference_price'
             ];
+            const metrics = [
+                { key: 'price', suffix: 'price' },
+                { key: 'likeCount', suffix: 'like_count' },
+                { key: 'viewCount', suffix: 'view_count' }
+            ];
 
-            platforms.forEach(([name]) => {
-                headers.push(name);
+            metrics.forEach(({ suffix }) => {
+                platforms.forEach(([name]) => {
+                    headers.push(`${name}_${suffix}`);
+                });
             });
 
             return [
@@ -2296,10 +2267,16 @@
                         result.purchaseReferencePrice || ''
                     ];
 
-                    platforms.forEach(([, key]) => {
-                        const product = result[key];
+                    metrics.forEach(({ key }) => {
+                        platforms.forEach(([, platform]) => {
+                            const value = result[platform]?.[key];
 
-                        row.push(product?.price || '');
+                            row.push(
+                                value === '' || value === null || value === undefined
+                                    ? ''
+                                    : value
+                            );
+                        });
                     });
 
                     return row;
@@ -2307,33 +2284,58 @@
             ];
         },
 
+        buildLatestLinks(results) {
+            const platforms = [
+                'shops',
+                'mercari',
+                'rakuma',
+                'yahoo',
+                'auctions'
+            ];
+            const metrics = ['price', 'like_count', 'view_count'];
+
+            return results.map(result => {
+                const row = Array(6).fill('');
+
+                metrics.forEach(metric => {
+                    platforms.forEach(platform => {
+                        row.push(
+                            metric === 'price'
+                                ? result[platform]?.url || ''
+                                : ''
+                        );
+                    });
+                });
+
+                return row;
+            });
+        },
+
         buildUnmatchedRows(unmatched) {
+            const buildRows = (
+                platform,
+                items,
+                detailKey
+            ) => items.map(item => [
+                platform,
+                typeof item === 'string'
+                    ? item
+                    : item?.title || '',
+                typeof item === 'string'
+                    ? ''
+                    : item?.[detailKey] || ''
+            ]);
+
             return [
                 ...unmatched.mercari.map(item => [
                     'mercari',
                     item.title || '',
                     item.status || ''
                 ]),
-                ...unmatched.shops.map(item => [
-                    'mercari_shops',
-                    typeof item === 'string' ? item : item?.title || '',
-                    typeof item === 'string' ? '' : item?.price || ''
-                ]),
-                ...unmatched.rakuma.map(item => [
-                    'rakuma',
-                    typeof item === 'string' ? item : item?.title || '',
-                    typeof item === 'string' ? '' : item?.price || ''
-                ]),
-                ...unmatched.yahoo.map(item => [
-                    'yahoo_fleamarket',
-                    typeof item === 'string' ? item : item?.title || '',
-                    typeof item === 'string' ? '' : item?.status || ''
-                ]),
-                ...unmatched.auctions.map(item => [
-                    'yahoo_auctions',
-                    typeof item === 'string' ? item : item?.title || '',
-                    typeof item === 'string' ? '' : item?.price || ''
-                ])
+                ...buildRows('mercari_shops', unmatched.shops, 'price'),
+                ...buildRows('rakuma', unmatched.rakuma, 'price'),
+                ...buildRows('yahoo_fleamarket', unmatched.yahoo, 'status'),
+                ...buildRows('yahoo_auctions', unmatched.auctions, 'price')
             ];
         }
     };

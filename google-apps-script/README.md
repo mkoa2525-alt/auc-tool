@@ -11,34 +11,33 @@
 7. Paste the URL and the same token into `CONFIG.urls` in `src/check-listed.user.js`.
 8. Update the userscript.
 
+When `Code.gs` changes after deployment, publish a new web app version from
+**Deploy > Manage deployments > Edit > New version** so the webhook uses the
+updated code.
+
 The script maintains a `check_results_latest` sheet automatically. It contains
-English column names for listing status, listing prices, listed days, and
-purchase reference prices, and is replaced on each check. Rows with different
-prices across two or more marketplaces are highlighted in yellow. For Yahoo
-Auctions, the first price shown is used for comparison when both a starting
-price and an immediate-purchase price are present.
+English column names for listing type, listing status, marketplace prices,
+listed days, and purchase reference prices, and is replaced on each check.
+The product identifier column is named `id`, the `product_name` column is
+150 pixels wide, and marketplace metric headers display their supplied logos.
+Each product occupies one row, with marketplace price columns followed by
+like-count columns and view-count columns. Price columns are 56 pixels wide,
+like-count columns are 28 pixels wide, and view-count columns are 42 pixels
+wide. Like and view counts are shown without emoji prefixes.
+Marketplace price cells link to their corresponding product pages when a link
+is available.
+The `listing_type` column shows `自社` for `出品中` products and `委託` for
+`委託出品中` products. If two or more marketplace prices differ, the
+`listing_check` column shows `⚠️`. Missing marketplace prices are left blank.
+Rows are highlighted in pale blue for `自社` and pale orange for `委託`.
+For Yahoo Auctions, the first price shown is used for comparison when both a
+starting price and an immediate-purchase price are present.
 
 Unmatched marketplace products are written to the separate
 `unmatched_products` sheet and replaced on each check.
 
-It stores snapshots in `metrics_history`. This sheet stores one row per
-capture date, product, and platform, including the capture timestamp, like
-count, and view count, which can be used directly to create trend charts. If
-the check is run multiple times on the same day, the matching rows are
-overwritten instead of duplicated. The single `captured_date` column is stored in
-`YYYY-MM-DD HH:mm:ss` format. The metrics table contains only the fields
-needed for analysis; purchase reference price and listing status are omitted.
-
-The `overview` sheet provides one like-count line chart per product. Each chart
-uses `listed_days` on the horizontal axis and a separate line for each
-platform. Products that are no longer listed disappear, while newly listed
-products are added on the next check.
-
-Chart source data is stored in the hidden `overview_chart_data` sheet.
-
-The older `overview_history`, `active_products`, and `dashboard` sheets are no
-longer updated. They can be archived or deleted after confirming the new
-`overview` sheet.
+The sync no longer writes metrics history or updates overview charts.
+Previously created `metrics_history` and overview sheets are left untouched.
 
 Keep the web app URL and token private. Anyone who has both can write data to
 the spreadsheet.

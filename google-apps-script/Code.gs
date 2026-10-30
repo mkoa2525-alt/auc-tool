@@ -1,30 +1,29 @@
 const WEBHOOK_TOKEN = 'CHANGE_ME_TO_A_RANDOM_TOKEN';
-const METRICS_SHEET_NAME = 'metrics_history';
-const OVERVIEW_SHEET_NAME = 'overview';
 const LATEST_RESULTS_SHEET_NAME = 'check_results_latest';
 const UNMATCHED_SHEET_NAME = 'unmatched_products';
-const PLATFORMS = ['メルカリShops', 'メルカリ', 'ラクマ', 'ヤフーフリマ', 'ヤフオク'];
+const MARKETPLACE_HEADER_IMAGES = {
+  mercari_shops: 'https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQOVk2RcsSgdbR7u0y0ZHp-N-e2E6R3Y1Eb9_sfKQSs9_rOPsjTKwaLU6o&s=10',
+  mercari: 'https://mochifac.com/wp-content/uploads/2021/10/mercari_logo_vertical.png',
+  rakuma: 'https://contents.oricon.co.jp/upimg/news/2231000/2230378/20220405_132734_p_o_4989.jpg',
+  yahoo_fleamarket: 'https://yt3.googleusercontent.com/wjDYMGwva6eH2eJ4hhgtW2uGhebLlKZMS8cuglgwTUWACHsaEVTfBZBrKDNgWz9CdeYBB_llrg=s900-c-k-c0x00ffffff-no-rj',
+  yahoo_auctions: 'https://storage.monocil.jp/item_images/9fc86431-07d8-47fa-847d-4f1aac19f99e.png'
+};
+const METRIC_COLUMN_WIDTHS = {
+  price: 56,
+  like_count: 28,
+  view_count: 42
+};
 const MARKETPLACE_PRICE_HEADERS = [
-  'mercari_shops',
-  'mercari',
-  'rakuma',
-  'yahoo_fleamarket',
-  'yahoo_auctions'
+  'mercari_shops_price',
+  'mercari_price',
+  'rakuma_price',
+  'yahoo_fleamarket_price',
+  'yahoo_auctions_price'
 ];
 const LISTING_TYPE_COLORS = {
   '自社': '#eaf3f8',
   '委託': '#fff0e1'
 };
-const METRICS_HEADERS = [
-  'captured_date',
-  'product_id',
-  'product_name',
-  'platform',
-  'listed_days',
-  'price',
-  'like_count',
-  'view_count'
-];
 
 function doPost(e) {
   try {
@@ -37,23 +36,27 @@ function doPost(e) {
     if (
       !Array.isArray(payload.latestRows) ||
       payload.latestRows.length === 0 ||
-      !Array.isArray(payload.metricsRows) ||
-      !Array.isArray(payload.activeProducts) ||
       !Array.isArray(payload.unmatchedRows)
     ) {
-      throw new Error('latestRows, metricsRows, activeProducts, and unmatchedRows are required');
+      throw new Error('latestRows and unmatchedRows are required');
     }
 
-    appendMetrics_(payload.metricsRows);
-    writeLatestResults_(payload.latestRows);
+    if (
+      payload.latestLinks !== undefined &&
+      (
+        !Array.isArray(payload.latestLinks) ||
+        payload.latestLinks.length !== payload.latestRows.length - 1
+      )
+    ) {
+      throw new Error('latestLinks must contain one link row per product');
+    }
+
+    writeLatestResults_(payload.latestRows, payload.latestLinks || []);
     writeUnmatched_(payload.unmatchedRows);
-    setupOverview_(payload.activeProducts, payload.metricsRows);
 
     return json_({
       ok: true,
       rows: payload.latestRows.length,
-      metricsRows: payload.metricsRows.length,
-      activeProducts: payload.activeProducts.length,
       unmatchedRows: payload.unmatchedRows.length
     });
   } catch (error) {
@@ -72,41 +75,71 @@ function getSheet_(sheetName) {
   return sheet;
 }
 
-function writeLatestResults_(rows) {
+function writeLatestResults_(rows, links) {
   const sheet = getSheet_(LATEST_RESULTS_SHEET_NAME);
   const columnCount = getColumnCount_(rows);
   const normalizedRows = normalizeRows_(rows);
   const headers = normalizedRows[0];
   const listingTypeIndex = headers.indexOf('listing_type');
+  const metricColumns = headers
+    .map((header, index) => ({ header, index }))
+    .filter(({ header }) =>
+      Object.keys(METRIC_COLUMN_WIDTHS).some(metric =>
+        header.endsWith(`_${metric}`)
+      )
+    );
   const priceIndexes = MARKETPLACE_PRICE_HEADERS
     .map(header => headers.indexOf(header))
     .filter(index => index >= 0);
   const listingCheckIndex = headers.indexOf('listing_check');
 
   if (listingCheckIndex >= 0 && priceIndexes.length > 1) {
-    normalizedRows.slice(1).forEach(row => {
-      if (hasPriceDifference_(row, priceIndexes)) {
-        row[listingCheckIndex] = '⚠️';
+    for (let rowIndex = 1; rowIndex < normalizedRows.length; rowIndex++) {
+      if (hasPriceDifference_(normalizedRows[rowIndex], priceIndexes)) {
+        normalizedRows[rowIndex][listingCheckIndex] = '⚠️';
       }
-    });
+    }
   }
 
+  sheet.getDataRange().breakApart();
   sheet.clear();
   sheet
     .getRange(1, 1, rows.length, columnCount)
     .setValues(normalizedRows);
+  if (links.length > 0) {
+    setPriceLinks_(sheet, normalizedRows, links, priceIndexes);
+  }
   sheet.getRange(1, 1, 1, columnCount)
     .setHorizontalAlignment('center');
+  sheet.setColumnWidth(2, 150);
+  sheet.setRowHeight(1, 40);
+
+  metricColumns.forEach(({ header, index }) => {
+    const metric = Object.keys(METRIC_COLUMN_WIDTHS)
+      .find(name => header.endsWith(`_${name}`));
+
+    sheet.setColumnWidth(index + 1, METRIC_COLUMN_WIDTHS[metric]);
+  });
+
+  headers.forEach((header, index) => {
+    const marketplace = Object.keys(MARKETPLACE_HEADER_IMAGES)
+      .find(name => header.startsWith(`${name}_`));
+
+    if (marketplace) {
+      sheet.getRange(1, index + 1).setFormula(
+        `=IMAGE("${MARKETPLACE_HEADER_IMAGES[marketplace]}", 1)`
+      );
+    }
+  });
 
   if (rows.length > 1) {
     const body = sheet.getRange(2, 1, rows.length - 1, columnCount);
 
     body.setHorizontalAlignment('left');
+    body.setVerticalAlignment('middle');
     sheet.getRange(2, 1, rows.length - 1, 1)
       .setHorizontalAlignment('right');
-    sheet.getRange(2, 5, rows.length - 1, 1)
-      .setHorizontalAlignment('right');
-    sheet.getRange(2, 6, rows.length - 1, 1)
+    sheet.getRange(2, 5, rows.length - 1, 2)
       .setHorizontalAlignment('right');
     sheet.getRange(2, 4, rows.length - 1, 1)
       .setHorizontalAlignment('center');
@@ -118,7 +151,6 @@ function writeLatestResults_(rows) {
     body.setBackgrounds(
       normalizedRows.slice(1).map(row => {
         const color = LISTING_TYPE_COLORS[row[listingTypeIndex]] || '#ffffff';
-
         return Array(columnCount).fill(color);
       })
     );
@@ -127,7 +159,7 @@ function writeLatestResults_(rows) {
       .slice(1)
       .forEach((row, rowIndex) => {
         row.forEach((value, columnIndex) => {
-          if (value === '✅' || value === '❌') {
+          if (value === '✅' || value === '❌' || value === '⚠️') {
             sheet.getRange(rowIndex + 2, columnIndex + 1)
               .setHorizontalAlignment('center');
           }
@@ -136,6 +168,31 @@ function writeLatestResults_(rows) {
   }
 
   sheet.setFrozenRows(1);
+}
+
+function setPriceLinks_(sheet, rows, links, priceIndexes) {
+  priceIndexes.forEach(columnIndex => {
+    const richTextValues = rows.slice(1).map((row, rowIndex) => {
+      const value = row[columnIndex] ?? '';
+      const richText = SpreadsheetApp.newRichTextValue()
+        .setText(String(value));
+      const url = links[rowIndex]?.[columnIndex];
+
+      if (
+        String(value).trim() &&
+        typeof url === 'string' &&
+        /^https?:\/\//i.test(url)
+      ) {
+        richText.setLinkUrl(url);
+      }
+
+      return [richText.build()];
+    });
+
+    sheet
+      .getRange(2, columnIndex + 1, richTextValues.length, 1)
+      .setRichTextValues(richTextValues);
+  });
 }
 
 function hasPriceDifference_(row, priceIndexes) {
@@ -166,250 +223,6 @@ function writeUnmatched_(rows) {
   }
 
   sheet.setFrozenRows(1);
-}
-
-function appendMetrics_(metricsRows) {
-  const sheet = getSheet_(METRICS_SHEET_NAME);
-
-  if (sheet.getLastRow() === 0) {
-    sheet
-      .getRange(1, 1, 1, METRICS_HEADERS.length)
-      .setValues([METRICS_HEADERS]);
-    sheet.setFrozenRows(1);
-  } else {
-    const existingHeaders = sheet
-      .getRange(1, 1, 1, sheet.getLastColumn())
-      .getValues()[0];
-
-    if (existingHeaders.join('\u0001') !== METRICS_HEADERS.join('\u0001')) {
-      const oldRows = sheet.getLastRow() > 1
-        ? sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getValues()
-        : [];
-      const indexes = Object.fromEntries(
-        existingHeaders.map((header, index) => [header, index])
-      );
-      const sourceColumns = {
-        captured_date: ['captured_date', 'captured_at'],
-        product_id: ['product_id'],
-        product_name: ['product_name'],
-        platform: ['platform'],
-        price: ['price'],
-        like_count: ['like_count'],
-        view_count: ['view_count']
-      };
-      const migratedRows = oldRows.map(row =>
-        METRICS_HEADERS.map(header => {
-          const source = sourceColumns[header]
-            .find(name => indexes[name] !== undefined);
-
-          return source ? row[indexes[source]] : '';
-        })
-      );
-
-      sheet.clear();
-      sheet
-        .getRange(1, 1, 1, METRICS_HEADERS.length)
-        .setValues([METRICS_HEADERS]);
-
-      if (migratedRows.length > 0) {
-        sheet
-          .getRange(2, 1, migratedRows.length, METRICS_HEADERS.length)
-          .setValues(migratedRows);
-      }
-
-      sheet.setFrozenRows(1);
-    }
-  }
-
-  if (metricsRows.length === 0) {
-    return;
-  }
-
-  const newRows = metricsRows.map(item => [
-    item.capturedDate || '',
-    item.productId || '',
-    item.productName || '',
-    item.platform || '',
-    item.listedDays || '',
-    item.price || '',
-    item.likeCount ?? '',
-    item.viewCount ?? ''
-  ]);
-
-  const existingRows = sheet.getLastRow() > 1
-    ? sheet.getRange(2, 1, sheet.getLastRow() - 1, METRICS_HEADERS.length).getValues()
-    : [];
-  const rowsByKey = new Map();
-
-  const dateKey = value => {
-    if (value instanceof Date && !Number.isNaN(value.getTime())) {
-      return Utilities.formatDate(
-        value,
-        Session.getScriptTimeZone(),
-        'yyyy-MM-dd'
-      );
-    }
-
-    return String(value || '').slice(0, 10);
-  };
-
-  const rowKey = row => [
-    dateKey(row[0]),
-    String(row[1] || ''),
-    String(row[3] || '')
-  ].join('\u0001');
-
-  existingRows.forEach(row => {
-    rowsByKey.set(rowKey(row), row);
-  });
-
-  newRows.forEach(row => {
-    rowsByKey.set(rowKey(row), row);
-  });
-
-  const rows = [...rowsByKey.values()];
-
-  if (sheet.getLastRow() > 1) {
-    sheet
-      .getRange(2, 1, sheet.getLastRow() - 1, METRICS_HEADERS.length)
-      .clearContent();
-  }
-
-  sheet
-    .getRange(2, 1, rows.length, METRICS_HEADERS.length)
-    .setValues(rows);
-}
-
-function setupOverview_(activeProducts, metricsRows) {
-  const sheet = getSheet_(OVERVIEW_SHEET_NAME);
-  const metricsSheet = getSheet_(METRICS_SHEET_NAME);
-  const chartSheet = getSheet_('overview_chart_data');
-  const history = metricsSheet.getLastRow() > 1
-    ? metricsSheet.getRange(2, 1, metricsSheet.getLastRow() - 1, 8).getValues()
-    : [];
-  const historyByProduct = new Map();
-  const chartRanges = [];
-  const platformNames = PLATFORMS;
-
-  history.forEach(row => {
-    const productId = String(row[1] || '');
-    const platform = String(row[3] || '');
-
-    if (!productId || !platform) {
-      return;
-    }
-
-    const productHistory = historyByProduct.get(productId) || new Map();
-    const platformHistory = productHistory.get(platform) || new Map();
-    const listedDays = Number(String(row[4] || '').replace(/[^\d]/g, ''));
-    const capturedDate = String(row[0] || '');
-
-    if (Number.isFinite(listedDays) && capturedDate) {
-      platformHistory.set(capturedDate, {
-        listedDays,
-        likes: Number(row[6]) || 0
-      });
-    }
-
-    productHistory.set(platform, platformHistory);
-    historyByProduct.set(productId, productHistory);
-  });
-
-  chartSheet.clear();
-  chartSheet.hideSheet();
-
-  activeProducts.forEach(product => {
-    const productHistory = historyByProduct.get(String(product.productId)) || new Map();
-    const dates = [...new Set(
-      [...productHistory.values()].flatMap(platformHistory =>
-        [...platformHistory.keys()]
-      )
-    )].sort();
-    const rows = [
-      ['captured_date', ...platformNames]
-    ];
-
-    dates.forEach(capturedDate => {
-      rows.push([
-        capturedDate,
-        ...platformNames.map(platform =>
-          productHistory.get(platform)?.get(capturedDate)?.likes ?? ''
-        )
-      ]);
-    });
-
-    if (rows.length < 2) {
-      return;
-    }
-
-    const startRow = chartSheet.getLastRow() + 1;
-    chartSheet
-      .getRange(startRow, 1, rows.length, rows[0].length)
-      .setValues(rows);
-    chartRanges.push({
-      productId: product.productId,
-      productName: product.productName || product.productId,
-      pointCount: rows.length - 1,
-      range: chartSheet.getRange(
-        startRow,
-        1,
-        rows.length,
-        rows[0].length
-      )
-    });
-  });
-
-  sheet.getDataRange().clearContent();
-  sheet.getCharts().forEach(chart => sheet.removeChart(chart));
-
-  chartRanges.forEach((item, index) => {
-    const width = Math.min(
-      1400,
-      Math.max(700, 280 + item.pointCount * 70)
-    );
-    const chart = sheet.newChart()
-      .setChartType(Charts.ChartType.LINE)
-      .addRange(item.range)
-      .setPosition(1 + index * 20, 1, 0, 0)
-      .setOption('title', `${item.productId} | ${item.productName}`)
-      .setOption('useFirstColumnAsDomain', true)
-      .setOption('backgroundColor', '#ffffff')
-      .setOption('chartArea', {
-        backgroundColor: '#ffffff'
-      })
-      .setOption('legend', {
-        position: 'bottom',
-        textStyle: { color: '#000000' }
-      })
-      .setOption('series', {
-        0: { labelInLegend: 'メルカリShops' },
-        1: { labelInLegend: 'メルカリ' },
-        2: { labelInLegend: 'ラクマ' },
-        3: { labelInLegend: 'ヤフーフリマ' },
-        4: { labelInLegend: 'ヤフオク' }
-      })
-      .setOption('hAxis', {
-        title: '取得日時',
-        textStyle: { color: '#000000' },
-        titleTextStyle: { color: '#000000' },
-        gridlines: { color: '#d9d9d9' },
-        baselineColor: '#666666'
-      })
-      .setOption('vAxis', {
-        title: 'いいね数',
-        textStyle: { color: '#000000' },
-        titleTextStyle: { color: '#000000' },
-        gridlines: { color: '#d9d9d9' },
-        baselineColor: '#666666'
-      })
-      .setOption('lineWidth', 2)
-      .setOption('pointSize', 5)
-      .setOption('width', width)
-      .setOption('height', 300)
-      .build();
-
-    sheet.insertChart(chart);
-  });
 }
 
 function getColumnCount_(rows) {
